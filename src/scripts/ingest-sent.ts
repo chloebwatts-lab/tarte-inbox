@@ -91,6 +91,12 @@ function dequote(body: string): string {
   return text.trim()
 }
 
+function parseEmailAddr(value: string | undefined): string {
+  if (!value) return ""
+  const m = value.match(/<([^>]+)>/)
+  return (m ? m[1] : value)!.trim().toLowerCase()
+}
+
 async function fetchSentPairs(limit: number): Promise<Pair[]> {
   const auth = await ensureGoogleAuthed()
   const gmail = google.gmail({ version: "v1", auth })
@@ -115,6 +121,15 @@ async function fetchSentPairs(limit: number): Promise<Pair[]> {
   console.log(`[ingest] found ${sentIds.length} sent messages`)
   const pairs: Pair[] = []
   const seenThreads = new Set<string>()
+  let droppedNotToCustomer = 0
+  let droppedInternal = 0
+
+  // Tarte-internal addresses we don't want to learn examples from (chats
+  // between staff are not "customer replies").
+  const INTERNAL_DOMAINS = ["tarte.com.au"]
+  const INTERNAL_ADDRESSES = new Set<string>([
+    "louise@accountantgc.com.au", // bookkeeper — adjust as we learn more
+  ])
 
   for (const id of sentIds) {
     try {
@@ -125,7 +140,7 @@ async function fetchSentPairs(limit: number): Promise<Pair[]> {
       })
       const msg = r.data
       const threadId = msg.threadId!
-      if (seenThreads.has(threadId)) continue // one pair per thread max
+      if (seenThreads.has(threadId)) continue
       seenThreads.add(threadId)
 
       const thread = await gmail.users.threads.get({
@@ -135,10 +150,41 @@ async function fetchSentPairs(limit: number): Promise<Pair[]> {
       })
       const msgs = thread.data.messages ?? []
       const sentIdx = msgs.findIndex((m: any) => m.id === id)
-      if (sentIdx < 1) continue // no prior message to reply to
+      if (sentIdx < 1) continue
 
       const incoming = msgs[sentIdx - 1]
       if (!incoming) continue
+
+      // Reject internal-only threads and forwards (the bug Chris flagged:
+      // "Can you please invoice / Bianca Zorn..." was a Chloe→bookkeeper
+      // message paired with the customer's enquiry as if it were the reply).
+      const incomingFromAddr = parseEmailAddr(header(incoming, "from"))
+      const replyToAddrs = (header(msg, "to") ?? "")
+        .split(",")
+        .map((s) => parseEmailAddr(s))
+        .filter(Boolean)
+      const replyCcAddrs = (header(msg, "cc") ?? "")
+        .split(",")
+        .map((s) => parseEmailAddr(s))
+        .filter(Boolean)
+      const allRecipients = [...replyToAddrs, ...replyCcAddrs]
+
+      // 1. The reply must actually go back to the incoming sender (or at
+      //    least include them on the To/Cc list). Otherwise it's a forward.
+      if (incomingFromAddr && !allRecipients.includes(incomingFromAddr)) {
+        droppedNotToCustomer++
+        continue
+      }
+
+      // 2. Skip threads where the "customer" is actually internal (staff
+      //    chatting, or messages to the bookkeeper).
+      const isInternal = (addr: string): boolean =>
+        INTERNAL_ADDRESSES.has(addr) ||
+        INTERNAL_DOMAINS.some((d) => addr.endsWith("@" + d))
+      if (isInternal(incomingFromAddr)) {
+        droppedInternal++
+        continue
+      }
 
       const incomingBody = dequote(extractText(incoming.payload))
       const replyBody = dequote(extractText(msg.payload))
@@ -156,6 +202,11 @@ async function fetchSentPairs(limit: number): Promise<Pair[]> {
     } catch (e) {
       console.warn(`[ingest] skip ${id}:`, e instanceof Error ? e.message : e)
     }
+  }
+  if (droppedNotToCustomer || droppedInternal) {
+    console.log(
+      `[ingest] dropped: ${droppedNotToCustomer} forwards (reply didn't go to sender), ${droppedInternal} internal threads`
+    )
   }
   return pairs
 }
