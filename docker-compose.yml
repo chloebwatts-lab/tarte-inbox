@@ -1,0 +1,31 @@
+services:
+  inbox:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      PORT: 8787
+      PUBLIC_BASE_URL: https://inbox.tarte.com.au
+      DATABASE_URL: ${DATABASE_URL}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET}
+      GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI}
+      HELLO_MAILBOX: ${HELLO_MAILBOX:-hello@tarte.com.au}
+      TEA_GARDEN_CALENDAR_ID: ${TEA_GARDEN_CALENDAR_ID}
+      BEACH_HOUSE_CALENDAR_ID: ${BEACH_HOUSE_CALENDAR_ID}
+      XERO_CLIENT_ID: ${XERO_CLIENT_ID}
+      XERO_CLIENT_SECRET: ${XERO_CLIENT_SECRET}
+      XERO_REDIRECT_URI: ${XERO_REDIRECT_URI}
+      TICK_INTERVAL_SECONDS: ${TICK_INTERVAL_SECONDS:-120}
+      ENABLE_AUTO_SEND: ${ENABLE_AUTO_SEND:-false}
+    networks:
+      # Joins TK's docker network so TK's Caddy can reverse-proxy here
+      # (Caddy routes inbox.tarte.com.au -> inbox:8787) and so we can
+      # reach the shared Postgres via the same private network if needed.
+      - tartekitchen_default
+
+networks:
+  tartekitchen_default:
+    external: true
+    name: tarte-kitchen_default
