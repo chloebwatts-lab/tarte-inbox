@@ -25,6 +25,7 @@ import {
   findOrCreateContact,
   createDraftInvoice,
   getInvoiceOnlineUrl,
+  getInvoicePdf,
 } from "./xero/client.js"
 import {
   classify,
@@ -386,7 +387,8 @@ async function deliver(
   latest: ParsedMessage,
   d: DraftResult,
   category: Category,
-  playbook: Awaited<ReturnType<typeof getPlaybook>>
+  playbook: Awaited<ReturnType<typeof getPlaybook>>,
+  opts: { extraAttachments?: Attachment[] } = {}
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   const ctx = {
@@ -397,10 +399,11 @@ async function deliver(
     references: latest.references ?? latest.messageIdHeader ?? "",
   }
   // Only attach default files on our FIRST reply in the thread.
-  const attachments =
+  const defaultAttachments =
     playbook?.default_attachment_paths?.length && isOurFirstReply(thread, helloMail)
       ? await loadAttachments(playbook.default_attachment_paths)
       : []
+  const attachments = [...defaultAttachments, ...(opts.extraAttachments ?? [])]
 
   const shouldAutoSend =
     config().ENABLE_AUTO_SEND &&
@@ -513,15 +516,31 @@ async function handleFunctionEnquiry(
       })
       // Auto-progress: create Xero deposit invoice + calendar event
       let invoiceUrl: string | undefined
+      let invoicePdf: Attachment | undefined
       try {
         const updated = await getBookingByThread(thread.threadId)
         if (updated) {
           await progressBookingToInvoice(updated.id)
           const after = await getBookingByThread(thread.threadId)
           if (after?.xero_deposit_invoice_id) {
-            invoiceUrl = await getInvoiceOnlineUrl(
-              after.xero_deposit_invoice_id
-            )
+            const invoiceId = after.xero_deposit_invoice_id
+            invoiceUrl = await getInvoiceOnlineUrl(invoiceId)
+            // Attach current PDF snapshot. If the team edits the invoice
+            // in Xero after this email is generated, they can re-fetch by
+            // having the agent re-tick (or just refer to the Xero URL).
+            try {
+              const pdfBytes = await getInvoicePdf(invoiceId)
+              invoicePdf = {
+                filename: `deposit-invoice-${invoiceId.slice(0, 8)}.pdf`,
+                contentType: "application/pdf",
+                data: pdfBytes,
+              }
+            } catch (e) {
+              console.warn(
+                "[booking] PDF fetch failed, continuing without:",
+                e instanceof Error ? e.message : e
+              )
+            }
           }
         }
       } catch (e) {
@@ -571,7 +590,9 @@ async function handleFunctionEnquiry(
         ],
       })
       if (d.body) {
-        await deliver(thread, latest, d, category, playbook)
+        await deliver(thread, latest, d, category, playbook, {
+          extraAttachments: invoicePdf ? [invoicePdf] : [],
+        })
       }
       return true
     }

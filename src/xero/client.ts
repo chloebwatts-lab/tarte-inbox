@@ -140,3 +140,27 @@ export async function getInvoiceOnlineUrl(invoiceId: string): Promise<string | u
   const r = await xero().accountingApi.getOnlineInvoice(tenantId, invoiceId)
   return r.body.onlineInvoices?.[0]?.onlineInvoiceUrl ?? undefined
 }
+
+/**
+ * Fetches the PDF of a Xero invoice (current state — re-fetching after an
+ * edit in Xero returns the updated PDF). Returns the raw bytes.
+ *
+ * Note: PDFs themselves aren't "editable" in the conventional sense. If the
+ * team spots a mistake, they should edit the invoice in Xero (it's in DRAFT
+ * status), then this function will return the corrected PDF on the next
+ * fetch. The Xero invoice URL link in the email also points at the live
+ * invoice, so it always reflects current edits.
+ */
+export async function getInvoicePdf(invoiceId: string): Promise<Buffer> {
+  const { tenantId } = await ensureXeroAuthed()
+  const r = await xero().accountingApi.getInvoiceAsPdf(tenantId, invoiceId, {
+    headers: { Accept: "application/pdf" },
+  })
+  // The xero-node SDK returns the PDF as a ReadStream in `body`.
+  const stream = r.body as unknown as NodeJS.ReadableStream
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
