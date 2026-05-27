@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS inbox_playbooks (
 ALTER TABLE inbox_playbooks
   ADD COLUMN IF NOT EXISTS default_attachment_paths jsonb NOT NULL DEFAULT '[]'::jsonb;
 
+-- When non-NULL, instead of drafting a reply to the original sender, the
+-- agent forwards the incoming email to this address. Used for categories
+-- that always get handed to another team (e.g. job_applications → work@).
+ALTER TABLE inbox_playbooks
+  ADD COLUMN IF NOT EXISTS forward_to text;
+
 -- Function booking state machine (Beach House + Tea Garden >12 pax).
 CREATE TABLE IF NOT EXISTS inbox_bookings (
   id                bigserial PRIMARY KEY,

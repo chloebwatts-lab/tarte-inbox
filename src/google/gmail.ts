@@ -318,6 +318,97 @@ export async function sendInThreadReply(
 
 export { mimeTypeFor }
 
+// --- Forwarding ---
+
+/**
+ * Forwards an existing message to a new recipient. Creates a DRAFT
+ * forward in a NEW thread (not the original) so the original customer
+ * conversation isn't polluted, and addresses go where intended.
+ */
+export async function createForwardDraft(
+  original: ParsedMessage,
+  forwardTo: string,
+  fromEmail: string,
+  fromName: string | undefined,
+  prependBody?: string
+): Promise<string> {
+  const subj = original.subject.toLowerCase().startsWith("fwd:")
+    ? original.subject
+    : `Fwd: ${original.subject}`
+  const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
+  const intro = prependBody?.trim() ? `${prependBody.trim()}\n\n` : ""
+  const forwardedBlock =
+    "---------- Forwarded message ----------\n" +
+    `From: ${original.from}\n` +
+    `Date: ${original.date.toUTCString()}\n` +
+    `Subject: ${original.subject}\n` +
+    `To: ${original.to.join(", ")}\n` +
+    (original.cc.length ? `Cc: ${original.cc.join(", ")}\n` : "") +
+    `\n` +
+    original.bodyText
+  const body = intro + forwardedBlock
+  const rfc822 = [
+    `From: ${fromHeader}`,
+    `To: ${forwardTo}`,
+    `Subject: ${subj}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    `Content-Transfer-Encoding: 7bit`,
+    ``,
+    body,
+  ].join("\r\n")
+  const raw = encodeRaw(rfc822)
+  const g = await gmail()
+  const r = await g.users.drafts.create({
+    userId: "me",
+    requestBody: { message: { raw } },
+  })
+  if (!r.data.id) throw new Error("forward draft returned no id")
+  return r.data.id
+}
+
+export async function sendForward(
+  original: ParsedMessage,
+  forwardTo: string,
+  fromEmail: string,
+  fromName: string | undefined,
+  prependBody?: string
+): Promise<string> {
+  const subj = original.subject.toLowerCase().startsWith("fwd:")
+    ? original.subject
+    : `Fwd: ${original.subject}`
+  const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
+  const intro = prependBody?.trim() ? `${prependBody.trim()}\n\n` : ""
+  const forwardedBlock =
+    "---------- Forwarded message ----------\n" +
+    `From: ${original.from}\n` +
+    `Date: ${original.date.toUTCString()}\n` +
+    `Subject: ${original.subject}\n` +
+    `To: ${original.to.join(", ")}\n` +
+    (original.cc.length ? `Cc: ${original.cc.join(", ")}\n` : "") +
+    `\n` +
+    original.bodyText
+  const body = intro + forwardedBlock
+  const rfc822 = [
+    `From: ${fromHeader}`,
+    `To: ${forwardTo}`,
+    `Subject: ${subj}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    `Content-Transfer-Encoding: 7bit`,
+    ``,
+    body,
+  ].join("\r\n")
+  const raw = encodeRaw(rfc822)
+  const g = await gmail()
+  const r = await g.users.messages.send({
+    userId: "me",
+    requestBody: { raw },
+  })
+  if (!r.data.id) throw new Error("forward send returned no id")
+  return r.data.id
+}
+
 /** Sent messages in the same thread, used for edit-capture. */
 export async function findOurSentReply(
   thread: ParsedThread,

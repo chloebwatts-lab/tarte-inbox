@@ -102,6 +102,10 @@ app.put("/playbooks/:category", async (c) => {
     default_attachment_paths: Array.isArray(body["default_attachment_paths"])
       ? (body["default_attachment_paths"] as string[])
       : [],
+    forward_to:
+      typeof body["forward_to"] === "string" && body["forward_to"]
+        ? (body["forward_to"] as string)
+        : null,
   })
   return c.json({ ok: true })
 })

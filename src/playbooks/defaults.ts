@@ -22,6 +22,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.8,
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
+    forward_to: null,
   },
   {
     category: "events_tea_garden_functions",
@@ -37,6 +38,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.85,
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
+    forward_to: null,
   },
   {
     category: "events_beach_house_functions",
@@ -49,6 +51,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.85,
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
+    forward_to: null,
   },
   {
     category: "suppliers",
@@ -62,6 +65,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.85,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
   {
     category: "reviews",
@@ -74,6 +78,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.9,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
   {
     category: "bookings_dine_in",
@@ -87,18 +92,20 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.85,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
   {
     category: "job_applications",
-    description: "Job applications and casual work enquiries.",
-    voice_guidance: VOICE_BASE,
-    reply_template:
-      "Hey {{first_name}},\n\nThanks for sending your application through — we'll have a look and come back to you if there's a fit." +
-      SIGNOFF,
+    description:
+      "Job applications and casual work enquiries. Auto-forwarded to work@tarte.com.au — no reply to the candidate.",
+    voice_guidance:
+      "Forward only. No drafted reply to the candidate. The hiring team at work@tarte.com.au will respond directly.",
+    reply_template: null,
     auto_send: false,
     min_confidence: 0.9,
     examples: [],
     default_attachment_paths: [],
+    forward_to: "work@tarte.com.au",
   },
   {
     category: "marketing_cold_outreach",
@@ -109,6 +116,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.7,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
   {
     category: "accounts_invoices",
@@ -119,6 +127,7 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 0.8,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
   {
     category: "needs_human",
@@ -129,5 +138,6 @@ export const DEFAULTS: Playbook[] = [
     min_confidence: 1.0,
     examples: [],
     default_attachment_paths: [],
+    forward_to: null,
   },
 ]

@@ -9,6 +9,8 @@ import {
   createInThreadDraft,
   sendInThreadReply,
   findOurSentReply,
+  createForwardDraft,
+  sendForward,
   mimeTypeFor,
   type Attachment,
   type ParsedThread,
@@ -223,6 +225,14 @@ async function processThread(threadId: string): Promise<boolean> {
     return true
   }
 
+  // --- forward-only categories (e.g. job_applications → work@) ---
+  // If the playbook has a forward_to address, we forward the original
+  // email to that team instead of drafting a reply to the sender.
+  const earlyPlaybook = await getPlaybook(result.category)
+  if (earlyPlaybook?.forward_to) {
+    return await forwardThread(thread, latest, result.category, earlyPlaybook.forward_to)
+  }
+
   // --- function-flow shortcut for events ---
   const venue = VENUE_BY_CATEGORY[result.category]
   if (venue && result.category !== "events_tea_garden_high_tea") {
@@ -235,7 +245,7 @@ async function processThread(threadId: string): Promise<boolean> {
     return true
   }
 
-  const playbook = await getPlaybook(result.category)
+  const playbook = earlyPlaybook
   const customerEmailAddr = extractEmail(latest.from)
   const history = customerEmailAddr
     ? await fetchCustomerHistory(customerEmailAddr, thread.threadId)
@@ -309,6 +319,57 @@ function isOurFirstReply(thread: ParsedThread, helloMail: string): boolean {
   // Exclude the latest message (it's the incoming we're about to reply to)
   const prior = thread.messages.slice(0, -1)
   return !prior.some((m) => m.from.toLowerCase().includes(lc))
+}
+
+/**
+ * Forward the latest incoming message to a target address (e.g. work@) and
+ * skip drafting a reply to the original sender. Auto-sends when both
+ * playbook.auto_send and ENABLE_AUTO_SEND are true; otherwise drafts.
+ */
+async function forwardThread(
+  thread: ParsedThread,
+  latest: ParsedMessage,
+  category: Category,
+  forwardTo: string
+): Promise<boolean> {
+  const helloMail = config().HELLO_MAILBOX
+  const pb = await getPlaybook(category)
+  const shouldAutoSend =
+    config().ENABLE_AUTO_SEND && pb?.auto_send === true
+  if (shouldAutoSend) {
+    const sentId = await sendForward(
+      latest,
+      forwardTo,
+      helloMail,
+      "Tarte Inbox"
+    )
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "forwarded",
+      last_action: "sent_forward",
+      meta: { forwardTo, sentMessageId: sentId, category },
+    })
+    return true
+  }
+  const draftId = await createForwardDraft(
+    latest,
+    forwardTo,
+    helloMail,
+    "Tarte Inbox"
+  )
+  await upsertThread({
+    thread_id: thread.threadId,
+    last_message_id: latest.id,
+    state: "forward_drafted",
+    last_action: "drafted_forward",
+    meta: {
+      forwardTo,
+      forwardDraftId: draftId,
+      category,
+    },
+  })
+  return true
 }
 
 async function deliver(
