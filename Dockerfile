@@ -8,6 +8,8 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src ./src
+# Constrain V8 heap so tsc fits on the 2GB droplet (memory in tarte_deploy.md)
+ENV NODE_OPTIONS=--max-old-space-size=1536
 RUN npm run build
 
 FROM node:20-alpine AS runner
