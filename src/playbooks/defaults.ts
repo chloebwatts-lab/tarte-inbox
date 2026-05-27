@@ -4,7 +4,10 @@ import type { Playbook } from "../db/queries.js"
 // hello@tarte.com.au's Sent folder. These are starting points only.
 
 const VOICE_BASE =
-  "Warm but brisk. Australian English. No corporate fluff, no 'we appreciate your business'. Use first name if known."
+  'Warm but brisk. Australian English. No corporate fluff, no "we appreciate your business". ' +
+  'Open with "Hey {first name}," (or "Hey there," if no name). Sign off "Kind regards,\nTarte Team".'
+
+const SIGNOFF = "\n\nKind regards,\nTarte Team"
 
 export const DEFAULTS: Playbook[] = [
   {
@@ -13,7 +16,8 @@ export const DEFAULTS: Playbook[] = [
       "High tea enquiries at Tea Garden for groups of 12 or fewer. Most arrive via Now Book It; if they come by email, redirect.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Thanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://nowbookit.com/.../tea-garden\n\nIf you'd like anything customised on top of the standard high tea (dietaries, extras, gift), reply here and we'll sort it.\n\nTarte Team",
+      "Hey {{first_name}},\n\nThanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://nowbookit.com/.../tea-garden\n\nIf you'd like anything customised on top of the standard high tea (dietaries, extras, gift), reply here and we'll sort it." +
+      SIGNOFF,
     auto_send: false,
     min_confidence: 0.8,
     examples: [],
@@ -26,7 +30,8 @@ export const DEFAULTS: Playbook[] = [
       VOICE_BASE +
       " For functions, never lock in a time — always say 'checking availability and back to you within the day'.",
     reply_template:
-      "Thanks {{first_name}}, lovely to hear from you. Tea Garden functions for groups over 12 need a quick floor-layout check from our side before we can confirm timing. We'll come back to you within the day with available windows and our function pack.\n\nTarte Team",
+      "Hey {{first_name}},\n\nThanks for getting in touch — lovely to hear from you. Tea Garden functions for groups over 12 need a quick floor-layout check from our side before we can confirm timing. We'll come back to you within the day with available windows and our function pack." +
+      SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
@@ -36,7 +41,8 @@ export const DEFAULTS: Playbook[] = [
     description: "Beach House function / event enquiries. Exclusive-use venue.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Thanks {{first_name}}, lovely to hear from you. We'd love to host you at the Beach House.\n\n{{proposed_slots}}\n\nOur function pack covers menus, pricing and what's included — happy to send it through. We hold a date with a deposit ({{deposit_amount}}).\n\nTarte Team",
+      "Hey {{first_name}},\n\nThanks for getting in touch — we'd love to host you at the Beach House.\n\n{{proposed_slots}}\n\nOur function pack covers menus, pricing and what's included — happy to send it through. We hold a date with a deposit ({{deposit_amount}})." +
+      SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
@@ -70,7 +76,8 @@ export const DEFAULTS: Playbook[] = [
       "Regular dine-in reservations that came by email instead of Now Book It.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Thanks for reaching out — easiest way to lock this in is our booking system, which shows live availability: https://nowbookit.com/.../book\n\nIf you'd prefer we book it for you, give us a date, time and number of guests and we'll sort it.\n\nTarte Team",
+      "Hey {{first_name}},\n\nThanks for reaching out — easiest way to lock this in is our booking system, which shows live availability: https://nowbookit.com/.../book\n\nIf you'd prefer we book it for you, give us a date, time and number of guests and we'll sort it." +
+      SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
@@ -80,7 +87,8 @@ export const DEFAULTS: Playbook[] = [
     description: "Job applications and casual work enquiries.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Thanks for sending your application through, {{first_name}}. We'll have a look and come back to you if there's a fit.\n\nTarte Team",
+      "Hey {{first_name}},\n\nThanks for sending your application through — we'll have a look and come back to you if there's a fit." +
+      SIGNOFF,
     auto_send: false,
     min_confidence: 0.9,
     examples: [],
