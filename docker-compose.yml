@@ -23,7 +23,9 @@ services:
       # Outgoing attachments (function packs, menus, etc.) bind-mounted from
       # the host so they survive image rebuilds and can be updated without
       # a deploy.
-      - ./attachments:/app/attachments:ro
+      # Writable so scripts/download-pack.js can save fetched files here.
+      # Pipeline.ts only reads; nothing in the live request path writes.
+      - ./attachments:/app/attachments
     networks:
       # Joins TK's docker network so TK's Caddy can reverse-proxy here
       # (Caddy routes inbox.tarte.com.au -> inbox:8787) and so we can
