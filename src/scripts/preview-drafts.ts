@@ -101,11 +101,14 @@ async function main(): Promise<void> {
       return to.includes("shawna@tarte.com.au") || cc.includes("shawna@tarte.com.au")
     })
     if (hasShawna) continue
-    // Skip automated/noreply senders — they're labelled but never drafted live
-    const isNoreply = /(?:noreply|no-reply|notifications?|donotreply|@ordermentum\.com|@nowbookit\.com|alerts?@|automated@|system@)/i.test(
+    // Skip automated/noreply senders + receipt subjects (matches live pipeline)
+    const subj = header(latest, "Subject") ?? ""
+    const isNoreply = /(?:noreply|no-reply|notifications?|donotreply|mailer@|@ordermentum\.com|@nowbookit\.com|alerts?@|automated@|system@)/i.test(
       from
     )
-    if (isNoreply) continue
+    const transactional = /(?:^|<)(orders?|billing|accounts?|invoices?|sales|info|admin|support|service)@/i.test(from)
+    const isReceipt = transactional && /(?:order confirmation|delivery confirmation|tax invoice|statement of account|receipt|payment received|payment processed|invoice #?\d|^quote #?\d)/i.test(subj)
+    if (isNoreply || isReceipt) continue
 
     const body = extractText(latest.payload).slice(0, 6000)
     if (body.length < 30) continue

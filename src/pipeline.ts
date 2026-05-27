@@ -100,26 +100,51 @@ function threadHandedOff(thread: ParsedThread): boolean {
 // Senders we should never reply to. Mostly automated notification systems
 // (order confirmations, invoice receipts, system alerts) where a reply
 // either goes to /dev/null or back into a ticketing system.
-const NOREPLY_PATTERNS = [
+const NOREPLY_SENDER_PATTERNS = [
   /noreply@/i,
   /no-reply@/i,
   /no_reply@/i,
   /notifications?@/i,
   /donotreply@/i,
   /do-not-reply@/i,
+  /mailer@/i,
   /mailer-daemon@/i,
   /postmaster@/i,
   /bounce/i,
-  /@ordermentum\.com/i, // supplier ordering platform — automated only
-  /@nowbookit\.com/i, // booking confirmations — automated only
+  /@ordermentum\.com/i, // supplier ordering platform, automated only
+  /@nowbookit\.com/i, // booking confirmations, automated only
   /alerts?@/i,
   /automated@/i,
   /system@/i,
 ]
 
-function isNoreplySender(from: string): boolean {
-  const lower = from.toLowerCase()
-  return NOREPLY_PATTERNS.some((p) => p.test(lower))
+// Receipt-style subjects that almost never need a human reply. Targets
+// orders@-style supplier addresses that aren't strictly "noreply" but
+// still send templated confirmations / invoices.
+const RECEIPT_SUBJECT_PATTERNS = [
+  /\border confirmation\b/i,
+  /\bdelivery confirmation\b/i,
+  /\btax invoice\b/i,
+  /\bstatement of account\b/i,
+  /\breceipt\b/i,
+  /\bpayment received\b/i,
+  /\bpayment processed\b/i,
+  /\binvoice #?\d/i, // "Invoice 12345"
+  /^quote #?\d/i,
+]
+
+function isAutomatedReceipt(from: string, subject: string): boolean {
+  const lowerFrom = from.toLowerCase()
+  if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(lowerFrom))) return true
+  // Receipt subject + a transactional sender prefix (orders@, billing@, etc.)
+  const transactionalSender = /(?:^|<)(orders?|billing|accounts?|invoices?|sales|info|admin|support|service)@/i
+  if (
+    transactionalSender.test(lowerFrom) &&
+    RECEIPT_SUBJECT_PATTERNS.some((p) => p.test(subject))
+  ) {
+    return true
+  }
+  return false
 }
 
 async function processThread(threadId: string): Promise<boolean> {
@@ -186,9 +211,9 @@ async function processThread(threadId: string): Promise<boolean> {
     return true
   }
 
-  // Automated notification (noreply / Ordermentum / NBI / etc) — there is
-  // no human at the other end to read a reply. Label only.
-  if (isNoreplySender(latest.from)) {
+  // Automated notification (noreply, order confirmation, statement, etc).
+  // No human at the other end, label only.
+  if (isAutomatedReceipt(latest.from, latest.subject)) {
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
