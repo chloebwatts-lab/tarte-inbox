@@ -97,6 +97,31 @@ function threadHandedOff(thread: ParsedThread): boolean {
   })
 }
 
+// Senders we should never reply to. Mostly automated notification systems
+// (order confirmations, invoice receipts, system alerts) where a reply
+// either goes to /dev/null or back into a ticketing system.
+const NOREPLY_PATTERNS = [
+  /noreply@/i,
+  /no-reply@/i,
+  /no_reply@/i,
+  /notifications?@/i,
+  /donotreply@/i,
+  /do-not-reply@/i,
+  /mailer-daemon@/i,
+  /postmaster@/i,
+  /bounce/i,
+  /@ordermentum\.com/i, // supplier ordering platform — automated only
+  /@nowbookit\.com/i, // booking confirmations — automated only
+  /alerts?@/i,
+  /automated@/i,
+  /system@/i,
+]
+
+function isNoreplySender(from: string): boolean {
+  const lower = from.toLowerCase()
+  return NOREPLY_PATTERNS.some((p) => p.test(lower))
+}
+
 async function processThread(threadId: string): Promise<boolean> {
   const thread = await getThread(threadId)
   if (!thread.messages.length) return false
@@ -150,13 +175,25 @@ async function processThread(threadId: string): Promise<boolean> {
   })
 
   // Handed off to a human via forward (e.g. shawna@tarte.com.au)?
-  // Label only — don't draft. Shawna will reply directly.
+  // Label only, don't draft. Shawna will reply directly.
   if (threadHandedOff(thread)) {
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
       state: "handed_off",
       last_action: "skipped_handoff",
+    })
+    return true
+  }
+
+  // Automated notification (noreply / Ordermentum / NBI / etc) — there is
+  // no human at the other end to read a reply. Label only.
+  if (isNoreplySender(latest.from)) {
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "noreply_skipped",
+      last_action: "skipped_noreply",
     })
     return true
   }

@@ -101,6 +101,11 @@ async function main(): Promise<void> {
       return to.includes("shawna@tarte.com.au") || cc.includes("shawna@tarte.com.au")
     })
     if (hasShawna) continue
+    // Skip automated/noreply senders — they're labelled but never drafted live
+    const isNoreply = /(?:noreply|no-reply|notifications?|donotreply|@ordermentum\.com|@nowbookit\.com|alerts?@|automated@|system@)/i.test(
+      from
+    )
+    if (isNoreply) continue
 
     const body = extractText(latest.payload).slice(0, 6000)
     if (body.length < 30) continue
