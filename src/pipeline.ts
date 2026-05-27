@@ -34,6 +34,7 @@ import {
 import { draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
+import { dequote } from "./lib/dequote.js"
 import {
   getThread as getThreadRow,
   upsertThread,
@@ -186,8 +187,13 @@ async function processThread(threadId: string): Promise<boolean> {
     return false
   }
 
+  // Strip quoted blocks + auto-mailer boilerplate from the latest body
+  // before classifying — keeps signal clean when the customer replied into
+  // a NBI confirmation or Outlook-quoted chain.
+  const cleanLatestBody = dequote(latest.bodyText)
+
   // --- classify ---
-  const result = await classify(latest.subject, latest.from, latest.bodyText)
+  const result = await classify(latest.subject, latest.from, cleanLatestBody)
   const label = CATEGORY_LABELS[result.category]
   await applyLabel(threadId, label)
 
@@ -269,7 +275,9 @@ async function processThread(threadId: string): Promise<boolean> {
 // --- helpers ---
 
 function toHistoryItem(m: ParsedMessage): { from: string; date: Date; text: string } {
-  return { from: m.from, date: m.date, text: m.bodyText.slice(0, 4000) }
+  // Dequote so the drafter doesn't see NBI confirmation boilerplate or
+  // Outlook-quoted chain noise. Keeps the prompt focused on real content.
+  return { from: m.from, date: m.date, text: dequote(m.bodyText).slice(0, 4000) }
 }
 
 function firstName(from: string): string | undefined {
