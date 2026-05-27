@@ -59,18 +59,36 @@ function extractText(payload: any): string {
   return out
 }
 
-/** Strip quoted reply blocks ("On Mon, ... wrote:") and signatures. */
+/** Strip quoted reply blocks and signatures. Handles single-line, multi-line
+ *  ("On 27 May 2026 at 06:10, Jenna Strauch / <strauch@...> / wrote:"),
+ *  Outlook-style ("From: ... Sent: ..."), and Apple Mail variants. */
 function dequote(body: string): string {
   const lines = body.split("\n")
   const out: string[] = []
-  for (const line of lines) {
-    // Standard quoted-reply marker
-    if (/^On .+wrote:$/i.test(line.trim())) break
-    if (/^>\s/.test(line)) continue
-    if (/^--\s*$/.test(line.trim())) break // signature delimiter
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ""
+    const trimmed = line.trim()
+    // Single-line "On X wrote:"
+    if (/^On .+wrote:?\s*$/i.test(trimmed)) break
+    // Outlook chain headers
+    if (/^From:\s/.test(trimmed) && i > 1) break
+    if (/^-+\s*Original Message\s*-+/i.test(trimmed)) break
+    // Quoted lines
+    if (/^>\s?/.test(line)) continue
+    // Signature delimiter
+    if (/^--\s*$/.test(trimmed)) break
     out.push(line)
   }
-  return out.join("\n").trim()
+  let text = out.join("\n").trim()
+  // Final sweep: multi-line "On ...\n<email>\nwrote:" pattern that survives
+  // because the first line doesn't end in "wrote:" itself.
+  text = text
+    .replace(/(^|\n)On\s[^\n]*(?:\n[^\n]*){0,4}wrote:?[\s\S]*$/i, "")
+    // Apple Mail / iOS variant: "Sent from my iPhone" + chain below
+    .replace(/\n+Sent from my (iPhone|iPad|Android|Outlook)[\s\S]*$/i, "")
+    // Hanging "wrote:" or "> wrote:" alone on a final line
+    .replace(/\n[>\s]*wrote:?\s*$/i, "")
+  return text.trim()
 }
 
 async function fetchSentPairs(limit: number): Promise<Pair[]> {
