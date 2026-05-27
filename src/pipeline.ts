@@ -33,6 +33,7 @@ import {
 } from "./llm/classifier.js"
 import { draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
+import { classifyConfirmation } from "./llm/confirmation.js"
 import {
   getThread as getThreadRow,
   upsertThread,
@@ -465,6 +466,110 @@ async function handleFunctionEnquiry(
     extracted.customer_name ?? firstName(latest.from) ?? null
 
   let booking = await getBookingByThread(thread.threadId)
+
+  // --- Follow-up: customer replied to a slots-proposed booking ---
+  // If we've already proposed slots, see whether their reply is a
+  // confirmation. Only run for Beach House (Tea Garden still gates on
+  // floor-layout check, which is a human).
+  if (
+    booking &&
+    booking.state === "slots_proposed" &&
+    booking.proposed_slots.length &&
+    venue === "beach_house"
+  ) {
+    const slotsHuman = booking.proposed_slots
+      .map(
+        (s, i) =>
+          `${i + 1}. ${new Date(s.start).toLocaleString("en-AU", {
+            timeZone: "Australia/Brisbane",
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+            hour: "numeric",
+            minute: "2-digit",
+          })}`
+      )
+      .join("\n")
+    const conf = await classifyConfirmation(slotsHuman, latest.bodyText)
+    if (
+      conf.action === "confirmed" &&
+      conf.selected_slot_index !== null &&
+      conf.selected_slot_index >= 0 &&
+      conf.selected_slot_index < booking.proposed_slots.length
+    ) {
+      const chosen = booking.proposed_slots[conf.selected_slot_index]!
+      await updateBooking(booking.id, {
+        state: "slot_selected",
+        event_start: new Date(chosen.start),
+        event_end: new Date(chosen.end),
+      })
+      // Auto-progress: create Xero deposit invoice + calendar event
+      let invoiceUrl: string | undefined
+      try {
+        const updated = await getBookingByThread(thread.threadId)
+        if (updated) {
+          await progressBookingToInvoice(updated.id)
+          const after = await getBookingByThread(thread.threadId)
+          if (after?.xero_deposit_invoice_id) {
+            invoiceUrl = await getInvoiceOnlineUrl(
+              after.xero_deposit_invoice_id
+            )
+          }
+        }
+      } catch (e) {
+        console.error(
+          "[booking] auto-invoice failed:",
+          e instanceof Error ? e.message : e
+        )
+      }
+      // Draft a confirmation reply with the invoice link
+      const playbook = await getPlaybook(category)
+      const history = customerEmail
+        ? await fetchCustomerHistory(customerEmail, thread.threadId)
+        : []
+      const historyBlock = renderCustomerHistory(history)
+      const slotLabel = new Date(chosen.start).toLocaleString("en-AU", {
+        timeZone: "Australia/Brisbane",
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+      const d = await draft({
+        category,
+        playbook,
+        threadHistory: thread.messages.map(toHistoryItem),
+        customerName: customerName ?? undefined,
+        customExtras: [
+          ...(historyBlock
+            ? [{ role: "user" as const, content: historyBlock }]
+            : []),
+          {
+            role: "user",
+            content:
+              `The customer has just CONFIRMED a function slot. Don't re-ask for confirmation — write a short locking-in reply.\n` +
+              `Confirmed slot: ${slotLabel}\n` +
+              `Pax: ${booking.pax ?? "unknown"}\n` +
+              `Venue: Beach House\n` +
+              `Deposit amount: $${FUNCTION_DEPOSIT_AUD}\n` +
+              (invoiceUrl
+                ? `Deposit invoice payment link: ${invoiceUrl}\n`
+                : `The deposit invoice is being prepared and will follow separately.\n`) +
+              `\nDrafting rule: Thank them for confirming, restate the date/time briefly, ` +
+              `mention the deposit invoice and link if provided, and say we look forward to having them. ` +
+              `Keep it short.`,
+          },
+        ],
+      })
+      if (d.body) {
+        await deliver(thread, latest, d, category, playbook)
+      }
+      return true
+    }
+    // If not a confirmation (different_time / question / declined),
+    // fall through to the normal drafting flow below.
+  }
   if (!booking) {
     const id = await insertBooking({
       thread_id: thread.threadId,
