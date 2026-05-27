@@ -1,18 +1,22 @@
 import { serve } from "@hono/node-server"
-import { Hono } from "hono"
-import "dotenv/config"
+import { app } from "./server.js"
+import { config } from "./config.js"
+import { migrate } from "./db/pool.js"
+import { startScheduler } from "./scheduler.js"
 
-const app = new Hono()
+async function main(): Promise<void> {
+  const c = config()
+  await migrate()
+  serve({ fetch: app.fetch, port: c.PORT }, ({ port }) => {
+    console.log(`[tarte-inbox] http listening on :${port}`)
+    console.log(
+      `[tarte-inbox] auto_send=${c.ENABLE_AUTO_SEND} tick=${c.TICK_INTERVAL_SECONDS}s`
+    )
+  })
+  startScheduler()
+}
 
-app.get("/health", (c) => c.json({ ok: true, ts: new Date().toISOString() }))
-
-// OAuth callbacks will be wired here in P1:
-//   app.get('/oauth/gmail/callback', ...)
-//   app.get('/oauth/xero/callback', ...)
-
-const port = Number(process.env.PORT ?? 8787)
-
-serve({ fetch: app.fetch, port }, ({ port }) => {
-  console.log(`[tarte-inbox] http listening on :${port}`)
-  console.log(`[tarte-inbox] scaffold only — no poll loop yet`)
+main().catch((e) => {
+  console.error("[tarte-inbox] fatal:", e)
+  process.exit(1)
 })
