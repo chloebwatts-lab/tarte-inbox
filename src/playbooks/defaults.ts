@@ -16,11 +16,12 @@ export const DEFAULTS: Playbook[] = [
       "High tea enquiries at Tea Garden for groups of 12 or fewer. Most arrive via Now Book It; if they come by email, redirect.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Hey {{first_name}},\n\nThanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://nowbookit.com/.../tea-garden\n\nIf you'd like anything customised on top of the standard high tea (dietaries, extras, gift), reply here and we'll sort it." +
+      "Hey {{first_name}},\n\nThanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://nowbookit.com/.../tea-garden\n\nI've attached our functions & events packages in case you'd like to extend the booking or add anything special." +
       SIGNOFF,
     auto_send: false,
     min_confidence: 0.8,
     examples: [],
+    default_attachment_paths: ["functions-events-packages.pdf"],
   },
   {
     category: "events_tea_garden_functions",
@@ -30,22 +31,24 @@ export const DEFAULTS: Playbook[] = [
       VOICE_BASE +
       " For functions, never lock in a time — always say 'checking availability and back to you within the day'.",
     reply_template:
-      "Hey {{first_name}},\n\nThanks for getting in touch — lovely to hear from you. Tea Garden functions for groups over 12 need a quick floor-layout check from our side before we can confirm timing. We'll come back to you within the day with available windows and our function pack." +
+      "Hey {{first_name}},\n\nThanks for getting in touch — lovely to hear from you. Tea Garden functions for groups over 12 need a quick floor-layout check from our side before we can confirm timing. I've attached our functions & events packages in the meantime, and we'll come back to you within the day with available windows." +
       SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
+    default_attachment_paths: ["functions-events-packages.pdf"],
   },
   {
     category: "events_beach_house_functions",
     description: "Beach House function / event enquiries. Exclusive-use venue.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Hey {{first_name}},\n\nThanks for getting in touch — we'd love to host you at the Beach House.\n\n{{proposed_slots}}\n\nOur function pack covers menus, pricing and what's included — happy to send it through. We hold a date with a deposit ({{deposit_amount}})." +
+      "Hey {{first_name}},\n\nThanks for getting in touch — we'd love to host you at the Beach House. I've attached our functions & events packages which covers menus, pricing and what's included.\n\n{{proposed_slots}}\n\nWe hold a date with a deposit ({{deposit_amount}})." +
       SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
+    default_attachment_paths: ["functions-events-packages.pdf"],
   },
   {
     category: "suppliers",
@@ -58,6 +61,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "reviews",
@@ -69,6 +73,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.9,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "bookings_dine_in",
@@ -81,6 +86,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.85,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "job_applications",
@@ -92,6 +98,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.9,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "marketing_cold_outreach",
@@ -101,6 +108,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.7,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "accounts_invoices",
@@ -110,6 +118,7 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 0.8,
     examples: [],
+    default_attachment_paths: [],
   },
   {
     category: "needs_human",
@@ -119,5 +128,6 @@ export const DEFAULTS: Playbook[] = [
     auto_send: false,
     min_confidence: 1.0,
     examples: [],
+    default_attachment_paths: [],
   },
 ]

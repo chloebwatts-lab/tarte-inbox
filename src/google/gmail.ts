@@ -182,18 +182,43 @@ interface ReplyContext {
   references: string // existing References header (we append inReplyTo)
 }
 
+export interface Attachment {
+  filename: string
+  contentType: string
+  data: Buffer
+}
+
+function mimeTypeFor(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? ""
+  return (
+    {
+      pdf: "application/pdf",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      doc: "application/msword",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      xls: "application/vnd.ms-excel",
+    }[ext] ?? "application/octet-stream"
+  )
+}
+
 function buildRfc822(
   ctx: ReplyContext,
   fromEmail: string,
   fromName: string | undefined,
-  bodyText: string
+  bodyText: string,
+  attachments: Attachment[] = []
 ): string {
   const subj = ctx.subject.toLowerCase().startsWith("re:")
     ? ctx.subject
     : `Re: ${ctx.subject}`
   const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
   const refs = [ctx.references, ctx.inReplyTo].filter(Boolean).join(" ")
-  const lines = [
+
+  const baseHeaders = [
     `From: ${fromHeader}`,
     `To: ${ctx.to}`,
     ctx.cc?.length ? `Cc: ${ctx.cc.join(", ")}` : null,
@@ -201,12 +226,47 @@ function buildRfc822(
     `In-Reply-To: ${ctx.inReplyTo}`,
     `References: ${refs}`,
     `MIME-Version: 1.0`,
+  ].filter(Boolean) as string[]
+
+  if (!attachments.length) {
+    return [
+      ...baseHeaders,
+      `Content-Type: text/plain; charset=UTF-8`,
+      `Content-Transfer-Encoding: 7bit`,
+      ``,
+      bodyText,
+    ].join("\r\n")
+  }
+
+  // Multipart with attachments
+  const boundary = `boundary_${Math.random().toString(36).slice(2)}${Date.now()}`
+  const parts: string[] = [
+    `--${boundary}`,
     `Content-Type: text/plain; charset=UTF-8`,
     `Content-Transfer-Encoding: 7bit`,
     ``,
     bodyText,
-  ].filter(Boolean) as string[]
-  return lines.join("\r\n")
+  ]
+  for (const a of attachments) {
+    const b64 = a.data.toString("base64")
+    // Wrap base64 at 76 chars per line per RFC
+    const wrapped = b64.match(/.{1,76}/g)?.join("\r\n") ?? b64
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${a.contentType}; name="${a.filename}"`,
+      `Content-Disposition: attachment; filename="${a.filename}"`,
+      `Content-Transfer-Encoding: base64`,
+      ``,
+      wrapped
+    )
+  }
+  parts.push(`--${boundary}--`)
+  return [
+    ...baseHeaders,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    ``,
+    ...parts,
+  ].join("\r\n")
 }
 
 function encodeRaw(rfc822: string): string {
@@ -217,9 +277,12 @@ export async function createInThreadDraft(
   ctx: ReplyContext,
   bodyText: string,
   fromEmail: string,
-  fromName?: string
+  fromName?: string,
+  attachments: Attachment[] = []
 ): Promise<string> {
-  const raw = encodeRaw(buildRfc822(ctx, fromEmail, fromName, bodyText))
+  const raw = encodeRaw(
+    buildRfc822(ctx, fromEmail, fromName, bodyText, attachments)
+  )
   const g = await gmail()
   const r = await g.users.drafts.create({
     userId: "me",
@@ -238,9 +301,12 @@ export async function sendInThreadReply(
   ctx: ReplyContext,
   bodyText: string,
   fromEmail: string,
-  fromName?: string
+  fromName?: string,
+  attachments: Attachment[] = []
 ): Promise<string> {
-  const raw = encodeRaw(buildRfc822(ctx, fromEmail, fromName, bodyText))
+  const raw = encodeRaw(
+    buildRfc822(ctx, fromEmail, fromName, bodyText, attachments)
+  )
   const g = await gmail()
   const r = await g.users.messages.send({
     userId: "me",
@@ -249,6 +315,8 @@ export async function sendInThreadReply(
   if (!r.data.id) throw new Error("send returned no id")
   return r.data.id
 }
+
+export { mimeTypeFor }
 
 /** Sent messages in the same thread, used for edit-capture. */
 export async function findOurSentReply(

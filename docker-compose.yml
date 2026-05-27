@@ -19,6 +19,11 @@ services:
       XERO_REDIRECT_URI: ${XERO_REDIRECT_URI}
       TICK_INTERVAL_SECONDS: ${TICK_INTERVAL_SECONDS:-120}
       ENABLE_AUTO_SEND: ${ENABLE_AUTO_SEND:-false}
+    volumes:
+      # Outgoing attachments (function packs, menus, etc.) bind-mounted from
+      # the host so they survive image rebuilds and can be updated without
+      # a deploy.
+      - ./attachments:/app/attachments:ro
     networks:
       # Joins TK's docker network so TK's Caddy can reverse-proxy here
       # (Caddy routes inbox.tarte.com.au -> inbox:8787) and so we can

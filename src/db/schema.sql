@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS inbox_playbooks (
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
+-- Filenames (relative to /app/attachments inside the container) to attach
+-- on the FIRST reply we send in a thread. Empty array = no auto-attach.
+ALTER TABLE inbox_playbooks
+  ADD COLUMN IF NOT EXISTS default_attachment_paths jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 -- Function booking state machine (Beach House + Tea Garden >12 pax).
 CREATE TABLE IF NOT EXISTS inbox_bookings (
   id                bigserial PRIMARY KEY,

@@ -1,5 +1,7 @@
 // Per-thread orchestration. Called by the scheduler for each unread inbox thread.
 
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
 import {
   getThread,
   listInboxThreads,
@@ -7,6 +9,8 @@ import {
   createInThreadDraft,
   sendInThreadReply,
   findOurSentReply,
+  mimeTypeFor,
+  type Attachment,
   type ParsedThread,
   type ParsedMessage,
 } from "./google/gmail.js"
@@ -172,6 +176,42 @@ function extractEmail(from: string): string {
   return (m ? m[1] : from)!.trim().toLowerCase()
 }
 
+const ATTACHMENTS_DIR = "/app/attachments"
+
+async function loadAttachments(paths: string[]): Promise<Attachment[]> {
+  const out: Attachment[] = []
+  for (const p of paths) {
+    try {
+      // Reject paths that escape the attachments dir
+      if (p.includes("..") || p.startsWith("/")) {
+        console.warn(`[attachments] skip unsafe path: ${p}`)
+        continue
+      }
+      const full = join(ATTACHMENTS_DIR, p)
+      const data = await readFile(full)
+      out.push({
+        filename: p.split("/").pop() ?? p,
+        contentType: mimeTypeFor(p),
+        data,
+      })
+    } catch (e) {
+      console.warn(
+        `[attachments] failed to load ${p}:`,
+        e instanceof Error ? e.message : e
+      )
+    }
+  }
+  return out
+}
+
+function isOurFirstReply(thread: ParsedThread, helloMail: string): boolean {
+  // True when none of the prior messages in the thread are from us.
+  const lc = helloMail.toLowerCase()
+  // Exclude the latest message (it's the incoming we're about to reply to)
+  const prior = thread.messages.slice(0, -1)
+  return !prior.some((m) => m.from.toLowerCase().includes(lc))
+}
+
 async function deliver(
   thread: ParsedThread,
   latest: ParsedMessage,
@@ -187,6 +227,12 @@ async function deliver(
     inReplyTo: latest.messageIdHeader ?? "",
     references: latest.references ?? latest.messageIdHeader ?? "",
   }
+  // Only attach default files on our FIRST reply in the thread.
+  const attachments =
+    playbook?.default_attachment_paths?.length && isOurFirstReply(thread, helloMail)
+      ? await loadAttachments(playbook.default_attachment_paths)
+      : []
+
   const shouldAutoSend =
     config().ENABLE_AUTO_SEND &&
     playbook?.auto_send === true &&
@@ -195,14 +241,25 @@ async function deliver(
     !d.flags.includes("needs_floor_layout_check")
 
   if (shouldAutoSend) {
-    const sentId = await sendInThreadReply(ctx, d.body, helloMail, "Tarte Team")
+    const sentId = await sendInThreadReply(
+      ctx,
+      d.body,
+      helloMail,
+      "Tarte Team",
+      attachments
+    )
     await upsertThread({
       thread_id: thread.threadId,
       last_message_id: latest.id,
       last_history_id: thread.historyId ?? null,
       state: "auto_sent",
       last_action: "sent",
-      meta: { sentMessageId: sentId, draftConfidence: d.confidence, flags: d.flags },
+      meta: {
+        sentMessageId: sentId,
+        draftConfidence: d.confidence,
+        flags: d.flags,
+        attachmentCount: attachments.length,
+      },
     })
     return true
   }
@@ -210,7 +267,8 @@ async function deliver(
     ctx,
     d.body,
     helloMail,
-    "Tarte Team"
+    "Tarte Team",
+    attachments
   )
   await upsertThread({
     thread_id: thread.threadId,
@@ -225,6 +283,7 @@ async function deliver(
       draftConfidence: d.confidence,
       flags: d.flags,
       category,
+      attachmentCount: attachments.length,
     },
   })
   return true

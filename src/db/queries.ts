@@ -123,12 +123,14 @@ export interface Playbook {
   auto_send: boolean
   min_confidence: number
   examples: Array<{ incoming: string; reply: string }>
+  default_attachment_paths: string[]
 }
 
 export async function getPlaybook(category: string): Promise<Playbook | null> {
   const r = await db().query<Playbook>(
     `SELECT category, description, voice_guidance, reply_template,
-            auto_send, min_confidence, examples
+            auto_send, min_confidence, examples,
+            COALESCE(default_attachment_paths, '[]'::jsonb) AS default_attachment_paths
        FROM inbox_playbooks WHERE category = $1`,
     [category]
   )
@@ -138,7 +140,8 @@ export async function getPlaybook(category: string): Promise<Playbook | null> {
 export async function listPlaybooks(): Promise<Playbook[]> {
   const r = await db().query<Playbook>(
     `SELECT category, description, voice_guidance, reply_template,
-            auto_send, min_confidence, examples
+            auto_send, min_confidence, examples,
+            COALESCE(default_attachment_paths, '[]'::jsonb) AS default_attachment_paths
        FROM inbox_playbooks ORDER BY category`
   )
   return r.rows
@@ -147,16 +150,18 @@ export async function listPlaybooks(): Promise<Playbook[]> {
 export async function upsertPlaybook(p: Playbook): Promise<void> {
   await db().query(
     `INSERT INTO inbox_playbooks
-       (category, description, voice_guidance, reply_template, auto_send, min_confidence, examples, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb, now())
+       (category, description, voice_guidance, reply_template, auto_send,
+        min_confidence, examples, default_attachment_paths, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb, now())
      ON CONFLICT (category) DO UPDATE
-       SET description    = EXCLUDED.description,
-           voice_guidance = EXCLUDED.voice_guidance,
-           reply_template = EXCLUDED.reply_template,
-           auto_send      = EXCLUDED.auto_send,
-           min_confidence = EXCLUDED.min_confidence,
-           examples       = EXCLUDED.examples,
-           updated_at     = now()`,
+       SET description              = EXCLUDED.description,
+           voice_guidance            = EXCLUDED.voice_guidance,
+           reply_template            = EXCLUDED.reply_template,
+           auto_send                 = EXCLUDED.auto_send,
+           min_confidence            = EXCLUDED.min_confidence,
+           examples                  = EXCLUDED.examples,
+           default_attachment_paths  = EXCLUDED.default_attachment_paths,
+           updated_at                = now()`,
     [
       p.category,
       p.description,
@@ -165,6 +170,7 @@ export async function upsertPlaybook(p: Playbook): Promise<void> {
       p.auto_send,
       p.min_confidence,
       JSON.stringify(p.examples),
+      JSON.stringify(p.default_attachment_paths ?? []),
     ]
   )
 }

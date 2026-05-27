@@ -99,6 +99,9 @@ app.put("/playbooks/:category", async (c) => {
     examples: Array.isArray(body["examples"])
       ? (body["examples"] as Array<{ incoming: string; reply: string }>)
       : [],
+    default_attachment_paths: Array.isArray(body["default_attachment_paths"])
+      ? (body["default_attachment_paths"] as string[])
+      : [],
   })
   return c.json({ ok: true })
 })
