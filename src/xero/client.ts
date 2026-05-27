@@ -16,8 +16,10 @@ export function xero(): XeroClient {
       "profile",
       "email",
       "offline_access",
-      "accounting.transactions",
+      // New granular scopes (apps created after 2026-03-02 don't have the
+      // legacy `accounting.transactions` broad scope).
       "accounting.contacts",
+      "accounting.invoices",
       "accounting.settings.read",
     ],
   })
