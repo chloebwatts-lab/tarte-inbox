@@ -16,7 +16,7 @@ export interface DraftResult {
   flags: string[] // e.g. ['needs_floor_layout_check', 'mentions_deposit']
 }
 
-const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner) — warm, friendly, professional, never gushing. Australian English.
+const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner): warm, friendly, professional, never gushing. Australian English.
 
 Output STRICT JSON only:
 { "body": "<plain text reply>", "confidence": <0..1>, "flags": [<short strings>] }
@@ -25,6 +25,8 @@ Conventions:
 - ALWAYS open with a greeting line. Use "Hey {first name}," when the name is known, else "Hey there,". Follow with a blank line before the body.
 - ALWAYS sign off with a blank line then "Kind regards," on its own line, then "Tarte Team" on the next line.
 - Warm but brisk. No marketing fluff, no "we appreciate your business".
+- Do NOT use em-dashes (—) or en-dashes (–). They are the most common AI tell. Use a comma, a regular hyphen with spaces (e.g. " - "), a full stop, or a new sentence instead.
+- Avoid other AI tells: "I hope this email finds you well", "delve into", "in essence", "navigate this together", "rest assured". Just say the thing.
 - Don't quote prices unless the playbook gives them.
 - If a question can't be answered without info you don't have, write a short holding reply and add "needs_human" to flags.
 - For function enquiries that require floor-layout confirmation, write a holding reply and add "needs_floor_layout_check" to flags.
@@ -91,6 +93,21 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
   return parseJson(block.text)
 }
 
+// Post-process to strip AI tells the model snuck through despite the prompt.
+function debot(body: string): string {
+  return (
+    body
+      // em-dash / en-dash → comma + space
+      .replace(/[—–]/g, ", ")
+      // double "  " from the replacement above
+      .replace(/, , /g, ", ")
+      // Hedging openers
+      .replace(/^I hope this email finds you well[.,!]?\s*/gim, "")
+      .replace(/^I hope you('| a)re well[.,!]?\s*/gim, "")
+      .trim()
+  )
+}
+
 function parseJson(text: string): DraftResult {
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) {
@@ -103,7 +120,7 @@ function parseJson(text: string): DraftResult {
   try {
     const obj = JSON.parse(match[0]) as Partial<DraftResult>
     return {
-      body: typeof obj.body === "string" ? obj.body : "",
+      body: typeof obj.body === "string" ? debot(obj.body) : "",
       confidence: typeof obj.confidence === "number" ? obj.confidence : 0,
       flags: Array.isArray(obj.flags) ? obj.flags.map(String) : [],
     }

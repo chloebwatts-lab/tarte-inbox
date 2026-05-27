@@ -84,6 +84,19 @@ export async function runTick(): Promise<{ seen: number; acted: number }> {
   return { seen, acted }
 }
 
+const HANDOFF_ADDRESSES = ["shawna@tarte.com.au"] // forwards to these = humans will handle, agent backs off
+
+function threadHandedOff(thread: ParsedThread): boolean {
+  // True if any message in the thread has a handoff address in To/Cc.
+  // Pattern: customer emails hello@, someone forwards to shawna@, agent backs off.
+  return thread.messages.some((m) => {
+    const recipients = [...m.to, ...m.cc].map((r) => r.toLowerCase())
+    return recipients.some((r) =>
+      HANDOFF_ADDRESSES.some((h) => r.includes(h))
+    )
+  })
+}
+
 async function processThread(threadId: string): Promise<boolean> {
   const thread = await getThread(threadId)
   if (!thread.messages.length) return false
@@ -135,6 +148,18 @@ async function processThread(threadId: string): Promise<boolean> {
     last_action: "labeled",
     meta: { rationale: result.rationale },
   })
+
+  // Handed off to a human via forward (e.g. shawna@tarte.com.au)?
+  // Label only — don't draft. Shawna will reply directly.
+  if (threadHandedOff(thread)) {
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "handed_off",
+      last_action: "skipped_handoff",
+    })
+    return true
+  }
 
   // --- function-flow shortcut for events ---
   const venue = VENUE_BY_CATEGORY[result.category]
