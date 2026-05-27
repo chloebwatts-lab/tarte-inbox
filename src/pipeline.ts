@@ -16,6 +16,10 @@ import {
 } from "./google/gmail.js"
 import { isSlotFree, createEvent, type Venue } from "./google/calendar.js"
 import {
+  fetchCustomerHistory,
+  renderCustomerHistory,
+} from "./google/customer-history.js"
+import {
   findOrCreateContact,
   createDraftInvoice,
   getInvoiceOnlineUrl,
@@ -145,11 +149,19 @@ async function processThread(threadId: string): Promise<boolean> {
   }
 
   const playbook = await getPlaybook(result.category)
+  const customerEmailAddr = extractEmail(latest.from)
+  const history = customerEmailAddr
+    ? await fetchCustomerHistory(customerEmailAddr, thread.threadId)
+    : []
+  const historyBlock = renderCustomerHistory(history)
   const d = await draft({
     category: result.category,
     playbook,
     threadHistory: thread.messages.map(toHistoryItem),
     customerName: firstName(latest.from),
+    customExtras: historyBlock
+      ? [{ role: "user", content: historyBlock }]
+      : undefined,
   })
   if (!d.body) return true
 
@@ -319,6 +331,11 @@ async function handleFunctionEnquiry(
     if (!booking) throw new Error(`booking ${id} vanished`)
   }
 
+  const history = customerEmail
+    ? await fetchCustomerHistory(customerEmail, thread.threadId)
+    : []
+  const historyBlock = renderCustomerHistory(history)
+
   // For Tea Garden functions we don't propose slots — defer to human (no NBI feed).
   if (venue === "tea_garden") {
     const playbook = await getPlaybook(category)
@@ -327,6 +344,9 @@ async function handleFunctionEnquiry(
       playbook,
       threadHistory: thread.messages.map(toHistoryItem),
       customerName: customerName ?? undefined,
+      customExtras: historyBlock
+        ? [{ role: "user", content: historyBlock }]
+        : undefined,
     })
     if (d.body) {
       await deliver(thread, latest, d, category, playbook)
@@ -392,6 +412,9 @@ async function handleFunctionEnquiry(
     threadHistory: thread.messages.map(toHistoryItem),
     customerName: customerName ?? undefined,
     customExtras: [
+      ...(historyBlock
+        ? [{ role: "user" as const, content: historyBlock }]
+        : []),
       {
         role: "user",
         content:
