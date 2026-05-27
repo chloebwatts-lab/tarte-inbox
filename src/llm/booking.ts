@@ -2,7 +2,10 @@ import { anthropic, MODEL } from "./client.js"
 
 export interface BookingExtraction {
   pax: number | null
-  preferred_date: string | null // YYYY-MM-DD
+  preferred_date: string | null // YYYY-MM-DD — set when the customer named a specific day
+  date_range_start: string | null // YYYY-MM-DD — earliest day they'd accept
+  date_range_end: string | null // YYYY-MM-DD — latest day they'd accept
+  weekends_only: boolean // true if they specifically asked for a weekend
   preferred_time: string | null // HH:MM 24h
   duration_hours: number | null
   customer_name: string | null
@@ -15,6 +18,9 @@ const SYSTEM = `You read function/event enquiry emails for a Queensland hospital
 {
   "pax": <int|null>,
   "preferred_date": "<YYYY-MM-DD|null>",
+  "date_range_start": "<YYYY-MM-DD|null>",
+  "date_range_end": "<YYYY-MM-DD|null>",
+  "weekends_only": <true|false>,
   "preferred_time": "<HH:MM|null>",
   "duration_hours": <number|null>,
   "customer_name": "<string|null>",
@@ -25,6 +31,12 @@ const SYSTEM = `You read function/event enquiry emails for a Queensland hospital
 Rules:
 - Only fill fields you're reasonably sure about. Null is fine.
 - Australian date format in source → convert to YYYY-MM-DD.
+- If they named ONE specific day, use preferred_date and leave the range fields null.
+- If they gave a RANGE — e.g. "last weekend in July or first weekend in August",
+  "anytime in October", "between the 15th and 25th of March" — fill
+  date_range_start + date_range_end (inclusive). Leave preferred_date null.
+- "last weekend in July" → range Sat–Sun of that last weekend. "weekend" implies
+  weekends_only=true. Calculate dates against the year the message was sent.
 - Times in 24h. If only "lunch" / "dinner" mentioned, leave null.
 - Customer name: their first name if extractable.`
 
@@ -46,6 +58,9 @@ function empty(): BookingExtraction {
   return {
     pax: null,
     preferred_date: null,
+    date_range_start: null,
+    date_range_end: null,
+    weekends_only: false,
     preferred_time: null,
     duration_hours: null,
     customer_name: null,
@@ -63,6 +78,11 @@ function parse(text: string): BookingExtraction {
       pax: typeof obj.pax === "number" ? obj.pax : null,
       preferred_date:
         typeof obj.preferred_date === "string" ? obj.preferred_date : null,
+      date_range_start:
+        typeof obj.date_range_start === "string" ? obj.date_range_start : null,
+      date_range_end:
+        typeof obj.date_range_end === "string" ? obj.date_range_end : null,
+      weekends_only: obj.weekends_only === true,
       preferred_time:
         typeof obj.preferred_time === "string" ? obj.preferred_time : null,
       duration_hours:

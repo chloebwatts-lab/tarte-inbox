@@ -334,14 +334,29 @@ async function handleFunctionEnquiry(
     return true
   }
 
-  // Beach House: propose slots from the calendar if we have date/time info.
+  // Beach House: propose slots from the calendar.
+  // Three cases:
+  //   1. Customer named a specific day → propose times on that day.
+  //   2. Customer gave a date range (e.g. "last weekend in July") → enumerate
+  //      candidate days within the range and propose free ones.
+  //   3. No date info at all → no slots, drafter writes a holding reply.
   let proposed: Array<{ start: string; end: string }> = []
+  const duration = extracted.duration_hours ?? SLOT_DURATION_DEFAULT_HOURS
   if (extracted.preferred_date) {
     proposed = await proposeSlots(
       venue,
       extracted.preferred_date,
       extracted.preferred_time,
-      extracted.duration_hours ?? SLOT_DURATION_DEFAULT_HOURS
+      duration
+    )
+  } else if (extracted.date_range_start && extracted.date_range_end) {
+    proposed = await proposeSlotsInRange(
+      venue,
+      extracted.date_range_start,
+      extracted.date_range_end,
+      extracted.weekends_only,
+      extracted.preferred_time,
+      duration
     )
   }
   await updateBooking(booking.id, {
@@ -361,6 +376,16 @@ async function handleFunctionEnquiry(
         .join("\n")
     : "We'll come back to you with available windows shortly."
 
+  const dateBlock = extracted.preferred_date
+    ? `Preferred date: ${extracted.preferred_date}`
+    : extracted.date_range_start && extracted.date_range_end
+      ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}`
+      : "Date: unspecified"
+
+  const draftingRules = proposed.length
+    ? "We've already checked the calendar — propose the slots above to the customer; DON'T ask them to re-confirm dates they've already given."
+    : "No slots are available in the date(s) they gave. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again."
+
   const d = await draft({
     category,
     playbook,
@@ -373,9 +398,10 @@ async function handleFunctionEnquiry(
           `Booking flow info (use this when drafting):\n` +
           `Venue: Beach House\n` +
           `Pax: ${extracted.pax ?? "unknown"}\n` +
-          `Preferred date: ${extracted.preferred_date ?? "unspecified"}\n` +
+          `${dateBlock}\n` +
           `Slots:\n${slotsBlock}\n` +
-          `Deposit to hold the date: $${FUNCTION_DEPOSIT_AUD}\n`,
+          `Deposit to hold the date: $${FUNCTION_DEPOSIT_AUD}\n` +
+          `\nDrafting rule: ${draftingRules}\n`,
       },
     ],
   })
@@ -383,6 +409,47 @@ async function handleFunctionEnquiry(
     await deliver(thread, latest, d, category, playbook)
   }
   return true
+}
+
+/** Walk through a date range (inclusive) and return up to MAX_SLOTS_PROPOSED
+ *  free time-slots. Optionally restricts to weekends. Stops early once it
+ *  has found enough. */
+async function proposeSlotsInRange(
+  venue: Venue,
+  startStr: string,
+  endStr: string,
+  weekendsOnly: boolean,
+  timeStr: string | null,
+  durationHours: number
+): Promise<Array<{ start: string; end: string }>> {
+  const start = new Date(`${startStr}T00:00:00+10:00`)
+  const end = new Date(`${endStr}T23:59:59+10:00`)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
+  const out: Array<{ start: string; end: string }> = []
+  // Walk day-by-day. Bail at 90 days to prevent runaway loops.
+  const MAX_DAYS = 90
+  let days = 0
+  const cursor = new Date(start)
+  while (cursor <= end && days < MAX_DAYS) {
+    if (out.length >= MAX_SLOTS_PROPOSED) break
+    const dow = cursor.getDay() // 0=Sun, 6=Sat
+    const isWeekend = dow === 0 || dow === 6
+    if (!weekendsOnly || isWeekend) {
+      const yyyymmdd =
+        cursor.getFullYear() +
+        "-" +
+        pad(cursor.getMonth() + 1) +
+        "-" +
+        pad(cursor.getDate())
+      // For each candidate day, try just one time slot to keep prompt size sane.
+      // Default to the customer's preferred time, else 12:00 (lunch).
+      const slots = await proposeSlots(venue, yyyymmdd, timeStr, durationHours)
+      if (slots.length) out.push(slots[0]!)
+    }
+    cursor.setDate(cursor.getDate() + 1)
+    days++
+  }
+  return out
 }
 
 async function proposeSlots(
