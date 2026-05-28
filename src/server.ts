@@ -62,6 +62,101 @@ app.post("/tick", async (c) => {
   return c.json({ seen, acted })
 })
 
+/**
+ * Force the agent to re-process a specific thread. Useful when we've shipped
+ * a code/prompt change and want to refresh existing drafts without waiting
+ * for new customer activity.
+ *
+ * - Deletes any existing draft we created in that thread (so a fresh one can
+ *   take its place).
+ * - Resets the thread's bookkeeping so the next tick treats it as new.
+ */
+app.post("/thread/:id/redraft", async (c) => {
+  const threadId = c.req.param("id")
+  if (!threadId) return c.text("missing thread id", 400)
+  try {
+    const { db } = await import("./db/pool.js")
+    // Pull current meta to find any existing draft we created
+    const existing = await db().query<{ meta: Record<string, unknown> }>(
+      `SELECT meta FROM inbox_threads WHERE thread_id = $1`,
+      [threadId]
+    )
+    const draftId = existing.rows[0]?.meta?.["draftId"] as string | undefined
+
+    // Best-effort: delete any prior draft we made
+    if (draftId) {
+      try {
+        const { google } = await import("googleapis")
+        const { ensureGoogleAuthed } = await import("./google/oauth.js")
+        const auth = await ensureGoogleAuthed()
+        const gmail = google.gmail({ version: "v1", auth })
+        await gmail.users.drafts.delete({ userId: "me", id: draftId })
+      } catch (e) {
+        console.warn(
+          "[redraft] could not delete old draft:",
+          e instanceof Error ? e.message : e
+        )
+      }
+    }
+
+    // Reset the thread so the next tick re-processes it. We clear
+    // last_message_id (forces "new activity") and last_action.
+    await db().query(
+      `UPDATE inbox_threads
+          SET last_message_id = '__forced_redraft__',
+              last_action = NULL,
+              meta = '{}'::jsonb
+        WHERE thread_id = $1`,
+      [threadId]
+    )
+
+    // Trigger an immediate tick so the user sees the result without waiting
+    const { runTick } = await import("./pipeline.js")
+    const r = await runTick()
+    return c.json({ ok: true, redrafted: threadId, tick: r })
+  } catch (e) {
+    return c.json(
+      { ok: false, error: e instanceof Error ? e.message : String(e) },
+      500
+    )
+  }
+})
+
+/**
+ * Find a thread by substring of the customer's email body. Used for ad-hoc
+ * debug: "redraft the Jenna thread" -> hit /thread/find?q=jenna -> get id.
+ */
+app.get("/thread/find", async (c) => {
+  const q = c.req.query("q")
+  if (!q) return c.text("missing ?q=", 400)
+  const { google } = await import("googleapis")
+  const { ensureGoogleAuthed } = await import("./google/oauth.js")
+  const auth = await ensureGoogleAuthed()
+  const gmail = google.gmail({ version: "v1", auth })
+  const r = await gmail.users.threads.list({
+    userId: "me",
+    q: q + " newer_than:60d",
+    maxResults: 10,
+  })
+  const out: Array<{ id: string; subject: string; from: string }> = []
+  for (const t of r.data.threads ?? []) {
+    if (!t.id) continue
+    const m = await gmail.users.threads.get({
+      userId: "me",
+      id: t.id,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From"],
+    })
+    const first = m.data.messages?.[0]
+    const header = (n: string): string =>
+      first?.payload?.headers?.find(
+        (h) => h.name?.toLowerCase() === n.toLowerCase()
+      )?.value ?? ""
+    out.push({ id: t.id, subject: header("Subject"), from: header("From") })
+  }
+  return c.json(out)
+})
+
 app.post("/booking/:id/invoice", async (c) => {
   const id = Number(c.req.param("id"))
   if (!Number.isFinite(id)) return c.text("bad id", 400)
