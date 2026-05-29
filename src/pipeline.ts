@@ -152,7 +152,7 @@ function isAutomatedReceipt(from: string, subject: string): boolean {
   return false
 }
 
-async function processThread(threadId: string): Promise<boolean> {
+export async function processThread(threadId: string): Promise<boolean> {
   const thread = await getThread(threadId)
   if (!thread.messages.length) return false
   const latest = thread.messages[thread.messages.length - 1]!

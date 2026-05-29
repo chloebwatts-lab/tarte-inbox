@@ -110,10 +110,10 @@ app.post("/thread/:id/redraft", async (c) => {
       [threadId]
     )
 
-    // Trigger an immediate tick so the user sees the result without waiting
-    const { runTick } = await import("./pipeline.js")
-    const r = await runTick()
-    return c.json({ ok: true, redrafted: threadId, tick: r })
+    // Process this specific thread directly (bypasses the unread filter)
+    const { processThread } = await import("./pipeline.js")
+    const acted = await processThread(threadId)
+    return c.json({ ok: true, redrafted: threadId, acted })
   } catch (e) {
     return c.json(
       { ok: false, error: e instanceof Error ? e.message : String(e) },
