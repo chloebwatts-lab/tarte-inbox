@@ -636,25 +636,13 @@ async function handleFunctionEnquiry(
     : []
   const historyBlock = renderCustomerHistory(history)
 
-  // For Tea Garden functions we don't propose slots — defer to human (no NBI feed).
-  if (venue === "tea_garden") {
-    const playbook = await getPlaybook(category)
-    const d = await draft({
-      category,
-      playbook,
-      threadHistory: thread.messages.map(toHistoryItem),
-      customerName: customerName ?? undefined,
-      customExtras: historyBlock
-        ? [{ role: "user", content: historyBlock }]
-        : undefined,
-    })
-    if (d.body) {
-      await deliver(thread, latest, d, category, playbook)
-    }
-    return true
-  }
+  // Both venues now propose slots from the shared calendar. Tea Garden gets
+  // a caveat in the drafting rule because we can't yet see high teas booked
+  // through Now Book It (no API sync yet) — human still needs to confirm
+  // NBI + floor layout before sending. Beach House is exclusive-use so the
+  // calendar check is authoritative.
 
-  // Beach House: propose slots from the calendar.
+  // Beach House and Tea Garden: propose slots from the calendar.
   // Three cases:
   //   1. Customer named a specific day → propose times on that day.
   //   2. Customer gave a date range (e.g. "last weekend in July") → enumerate
@@ -702,9 +690,15 @@ async function handleFunctionEnquiry(
       ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}`
       : "Date: unspecified"
 
+  const teaGardenCaveat =
+    venue === "tea_garden"
+      ? " Add ONE short sentence noting that we'll just confirm there are no standard bookings on that date (we use Now Book It for high teas and need to cross-check). Do not say 'Now Book It' to the customer — phrase it as 'just confirming there's nothing already booked in for that day'."
+      : ""
+
   const draftingRules = proposed.length
-    ? "We've already checked the calendar — propose the slots above to the customer; DON'T ask them to re-confirm dates they've already given."
-    : "No slots are available in the date(s) they gave. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again."
+    ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
+      teaGardenCaveat
+    : "No slots are available in the date(s) they gave according to our calendar. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again."
 
   const d = await draft({
     category,
