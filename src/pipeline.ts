@@ -152,10 +152,28 @@ function isAutomatedReceipt(from: string, subject: string): boolean {
   return false
 }
 
-export async function processThread(threadId: string): Promise<boolean> {
+export async function processThread(
+  threadId: string,
+  opts: { force?: boolean } = {}
+): Promise<boolean> {
   const thread = await getThread(threadId)
   if (!thread.messages.length) return false
-  const latest = thread.messages[thread.messages.length - 1]!
+  // When forced, pretend the latest customer message is the one to reply to
+  // — even if our team has already replied. Used for /thread/:id/redraft so
+  // we can test the agent's drafting after a prompt change without waiting
+  // for new customer activity.
+  let latest = thread.messages[thread.messages.length - 1]!
+  if (opts.force) {
+    const helloMail = config().HELLO_MAILBOX.toLowerCase()
+    // Walk back to the most recent customer-authored message
+    for (let i = thread.messages.length - 1; i >= 0; i--) {
+      const m = thread.messages[i]!
+      if (!m.from.toLowerCase().includes(helloMail)) {
+        latest = m
+        break
+      }
+    }
+  }
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
   const fromUs = latest.from.toLowerCase().includes(helloMail)
 

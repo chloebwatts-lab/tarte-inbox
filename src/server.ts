@@ -110,9 +110,11 @@ app.post("/thread/:id/redraft", async (c) => {
       [threadId]
     )
 
-    // Process this specific thread directly (bypasses the unread filter)
+    // Process this specific thread directly (bypasses unread filter AND
+    // the "skip if our team already replied" guard, so we can test prompt
+    // changes on threads Georgia/Shawna already touched).
     const { processThread } = await import("./pipeline.js")
-    const acted = await processThread(threadId)
+    const acted = await processThread(threadId, { force: true })
     return c.json({ ok: true, redrafted: threadId, acted })
   } catch (e) {
     return c.json(
