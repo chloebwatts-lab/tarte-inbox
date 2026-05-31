@@ -23,6 +23,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
     forward_to: null,
+    faq: [],
   },
   {
     category: "events_tea_garden_functions",
@@ -39,6 +40,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
     forward_to: null,
+    faq: [],
   },
   {
     category: "events_beach_house_functions",
@@ -52,6 +54,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: ["functions-events-packages.pdf"],
     forward_to: null,
+    faq: [],
   },
   {
     category: "suppliers",
@@ -66,6 +69,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
   {
     category: "reviews",
@@ -79,6 +83,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
   {
     category: "bookings_dine_in",
@@ -93,6 +98,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
   {
     category: "job_applications",
@@ -106,6 +112,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: "work@tarte.com.au",
+    faq: [],
   },
   {
     category: "marketing_cold_outreach",
@@ -117,6 +124,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
   {
     category: "accounts_invoices",
@@ -128,6 +136,7 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
   {
     category: "needs_human",
@@ -139,5 +148,6 @@ export const DEFAULTS: Playbook[] = [
     examples: [],
     default_attachment_paths: [],
     forward_to: null,
+    faq: [],
   },
 ]

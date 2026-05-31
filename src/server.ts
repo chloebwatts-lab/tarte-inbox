@@ -203,6 +203,9 @@ app.put("/playbooks/:category", async (c) => {
       typeof body["forward_to"] === "string" && body["forward_to"]
         ? (body["forward_to"] as string)
         : null,
+    faq: Array.isArray(body["faq"])
+      ? (body["faq"] as Array<{ question: string; answer: string }>)
+      : [],
   })
   return c.json({ ok: true })
 })

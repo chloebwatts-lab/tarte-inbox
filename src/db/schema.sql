@@ -53,6 +53,12 @@ ALTER TABLE inbox_playbooks
 ALTER TABLE inbox_playbooks
   ADD COLUMN IF NOT EXISTS forward_to text;
 
+-- Per-category FAQ / cheat sheet. Array of {question, answer} pairs the
+-- agent reads as authoritative facts when drafting. Questions with an
+-- empty answer are flagged in the admin UI for Shawna/Chloe to fill in.
+ALTER TABLE inbox_playbooks
+  ADD COLUMN IF NOT EXISTS faq jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 -- Function booking state machine (Beach House + Tea Garden >12 pax).
 CREATE TABLE IF NOT EXISTS inbox_bookings (
   id                bigserial PRIMARY KEY,

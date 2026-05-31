@@ -47,11 +47,21 @@ function renderPlaybook(p: Playbook | null): string {
         `--- example ${i + 1} ---\nIncoming:\n${ex.incoming}\nReply:\n${ex.reply}`
     )
     .join("\n\n")
+  // FAQ entries with non-empty answers are authoritative facts. Empty answers
+  // are intentionally hidden — they're for human review only, not the agent.
+  const faqEntries = (p.faq ?? []).filter(
+    (f) => f.question?.trim() && f.answer?.trim()
+  )
+  const faqBlock = faqEntries.length
+    ? "Cheat sheet (authoritative facts — quote these directly when relevant):\n" +
+      faqEntries.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join("\n\n")
+    : ""
   return [
     `\n--- playbook for category: ${p.category} ---`,
     `Description: ${p.description}`,
     `Voice guidance: ${p.voice_guidance}`,
     p.reply_template ? `Template:\n${p.reply_template}` : "",
+    faqBlock,
     exBlock ? `Examples of past replies:\n${exBlock}` : "",
   ]
     .filter(Boolean)
