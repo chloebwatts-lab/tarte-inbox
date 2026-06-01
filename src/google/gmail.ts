@@ -97,9 +97,17 @@ function stripHtml(html: string): string {
     .trim()
 }
 
-/** Search unread, non-chat user mail in the inbox. */
+/**
+ * Search recent inbox threads — including ones that have been READ but not
+ * replied to. Previously this was `is:unread` only, which meant any thread
+ * Shawna or Georgia clicked open (accidentally or otherwise) got skipped
+ * forever. The pipeline's per-thread dedupe (last_message_id, last_action)
+ * prevents re-processing already-handled threads.
+ *
+ * Capped to the last 30 days + maxResults 50 to keep API + prompt cost sane.
+ */
 export async function listInboxThreads(
-  query = "in:inbox is:unread -category:promotions"
+  query = "in:inbox newer_than:30d -category:promotions"
 ): Promise<string[]> {
   const g = await gmail()
   const r = await g.users.threads.list({
