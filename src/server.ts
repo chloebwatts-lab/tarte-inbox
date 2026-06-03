@@ -62,6 +62,12 @@ app.post("/tick", async (c) => {
   return c.json({ seen, acted })
 })
 
+app.post("/sync-nbi", async (c) => {
+  const { ingestNbi } = await import("./nbi/ingest.js")
+  const r = await ingestNbi(7)
+  return c.json(r)
+})
+
 /**
  * Force the agent to re-process a specific thread. Useful when we've shipped
  * a code/prompt change and want to refresh existing drafts without waiting

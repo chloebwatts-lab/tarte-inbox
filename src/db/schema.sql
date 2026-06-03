@@ -59,6 +59,35 @@ ALTER TABLE inbox_playbooks
 ALTER TABLE inbox_playbooks
   ADD COLUMN IF NOT EXISTS faq jsonb NOT NULL DEFAULT '[]'::jsonb;
 
+-- Now Book It bookings, ingested from the daily summary CSV email.
+-- One row per booking reference. Re-ingesting overwrites the row so
+-- status / payment changes flow through.
+CREATE TABLE IF NOT EXISTS inbox_nbi_bookings (
+  booking_ref       text PRIMARY KEY,
+  booking_date      date NOT NULL,
+  booking_time      time NOT NULL,
+  service           text NOT NULL,   -- e.g. "Tea Garden High Tea", "Restaurant Menu"
+  pax               int NOT NULL,
+  first_name        text,
+  last_name         text,
+  email             text,
+  phone             text,
+  notes             text,
+  tags              text,
+  status            text NOT NULL,   -- "Confirmed" / "Unconfirmed" / "Cancelled" / "Seated"
+  seat_location     text,            -- e.g. "Main Dining Room", "Tea Garden (next door)"
+  booked_at         timestamptz,
+  last_modified_at  timestamptz,
+  payment_type      text,
+  total_amount      numeric(10,2),
+  ingested_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS inbox_nbi_bookings_date_idx
+  ON inbox_nbi_bookings(booking_date) WHERE status != 'Cancelled';
+CREATE INDEX IF NOT EXISTS inbox_nbi_bookings_service_idx
+  ON inbox_nbi_bookings(service);
+
 -- Function booking state machine (Beach House + Tea Garden >12 pax).
 CREATE TABLE IF NOT EXISTS inbox_bookings (
   id                bigserial PRIMARY KEY,

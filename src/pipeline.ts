@@ -21,6 +21,7 @@ import {
   fetchCustomerHistory,
   renderCustomerHistory,
 } from "./google/customer-history.js"
+import { nbiBookingsForDate } from "./nbi/ingest.js"
 import {
   findOrCreateContact,
   createDraftInvoice,
@@ -690,9 +691,27 @@ async function handleFunctionEnquiry(
       ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}`
       : "Date: unspecified"
 
+  // For Tea Garden, look up NBI high tea bookings on the proposed date(s)
+  // so we can give a concrete picture of how busy the space already is.
+  let nbiContext = ""
+  if (venue === "tea_garden" && proposed.length) {
+    const dates = new Set(proposed.map((s) => s.start.slice(0, 10)))
+    const lines: string[] = []
+    for (const d of dates) {
+      const bookings = await nbiBookingsForDate("Tea Garden High Tea", d)
+      lines.push(
+        `  ${d}: ${bookings.length} high tea booking(s) already in NBI` +
+          (bookings.length
+            ? ` (times: ${bookings.map((b) => b.booking_time.slice(0, 5)).join(", ")})`
+            : "")
+      )
+    }
+    nbiContext = `\nNow Book It state on proposed dates:\n${lines.join("\n")}\n`
+  }
+
   const teaGardenCaveat =
     venue === "tea_garden"
-      ? " Add ONE short sentence noting that we'll just confirm there are no standard bookings on that date (we use Now Book It for high teas and need to cross-check). Do not say 'Now Book It' to the customer — phrase it as 'just confirming there's nothing already booked in for that day'."
+      ? " For Tea Garden function bookings, factor in the Now Book It state above. If there are 3+ high tea bookings on the date, mention that the space looks busy and offer to confirm the layout works. If 0-2, just propose the slots confidently. Never mention 'Now Book It' to the customer."
       : ""
 
   const draftingRules = proposed.length
@@ -713,10 +732,11 @@ async function handleFunctionEnquiry(
         role: "user",
         content:
           `Booking flow info (use this when drafting):\n` +
-          `Venue: Beach House\n` +
+          `Venue: ${venue === "tea_garden" ? "Tea Garden" : "Beach House"}\n` +
           `Pax: ${extracted.pax ?? "unknown"}\n` +
           `${dateBlock}\n` +
           `Slots:\n${slotsBlock}\n` +
+          nbiContext +
           `Deposit to hold the date: $${FUNCTION_DEPOSIT_AUD}\n` +
           `\nDrafting rule: ${draftingRules}\n`,
       },
