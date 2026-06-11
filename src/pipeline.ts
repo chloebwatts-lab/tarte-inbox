@@ -6,6 +6,8 @@ import {
   getThread,
   listInboxThreads,
   applyLabel,
+  removeLabel,
+  archiveThread,
   createInThreadDraft,
   sendInThreadReply,
   findOurSentReply,
@@ -21,7 +23,7 @@ import {
   fetchCustomerHistory,
   renderCustomerHistory,
 } from "./google/customer-history.js"
-import { nbiBookingsForDate } from "./nbi/ingest.js"
+import { nbiBookingsForDate, nbiBookingsForEmail } from "./nbi/ingest.js"
 import {
   findOrCreateContact,
   createDraftInvoice,
@@ -60,6 +62,17 @@ const MAX_SLOTS_PROPOSED = 3
 const SLOT_DURATION_DEFAULT_HOURS = 3
 const FUNCTION_DEPOSIT_AUD = 500
 const BALANCE_DAYS_BEFORE_EVENT = 14
+
+// Triage labels — the staff work surface. The deal: anything needing a human
+// carries ACTION_LABEL (and URGENT_LABEL when hot); everything the agent
+// fully handled is archived out of the inbox with its category label intact.
+export const ACTION_LABEL = "Tarte / Action needed"
+export const URGENT_LABEL = "Tarte / URGENT"
+export const AUTO_HANDLED_LABEL = "Tarte / Auto-handled"
+
+// Only archive LLM-classified noise when the classifier is sure. Regex-matched
+// noreply receipts archive unconditionally.
+const ARCHIVE_CONFIDENCE_MIN = 0.75
 
 // --- entry ---
 
@@ -183,6 +196,8 @@ export async function processThread(
   // Edit-capture: if the latest message is ours, and we previously drafted, log diff.
   if (fromUs && existing?.last_action === "drafted") {
     await captureEdit(thread, existing.meta)
+    // Staff replied — their action item is done, clear the flag.
+    await removeLabel(threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
@@ -198,10 +213,18 @@ export async function processThread(
 
   // Skip if no human-facing message (e.g. fully internal/automated)
   if (fromUs) {
+    // If staff replied to a thread we'd flagged for them (needs_human etc.),
+    // their job is done — clear the flag and mark it handled so the digest
+    // stops listing it.
+    const wasFlagged =
+      (existing?.state === "classified" && existing?.last_action === "labeled") ||
+      existing?.state === "urgent"
+    if (wasFlagged) await removeLabel(threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
       last_history_id: thread.historyId ?? null,
+      state: wasFlagged ? "sent_by_human" : undefined,
       last_action: "skipped_outbound",
     })
     return false
@@ -241,13 +264,45 @@ export async function processThread(
   }
 
   // Automated notification (noreply, order confirmation, statement, etc).
-  // No human at the other end, label only.
+  // No human at the other end — label, archive out of the inbox.
   if (isAutomatedReceipt(latest.from, latest.subject)) {
+    await archiveThread(threadId)
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
       state: "noreply_skipped",
-      last_action: "skipped_noreply",
+      last_action: "archived_noreply",
+    })
+    return true
+  }
+
+  // Concluded threads and cold outreach: archive when the classifier is
+  // confident. Category label stays on for audit; a new reply from the
+  // sender brings the thread straight back into the inbox.
+  if (
+    (result.category === "no_action" ||
+      result.category === "marketing_cold_outreach") &&
+    result.confidence >= ARCHIVE_CONFIDENCE_MIN
+  ) {
+    await archiveThread(threadId)
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "auto_archived",
+      last_action: "archived_" + result.category,
+    })
+    return true
+  }
+
+  // Urgent: never drafted, never archived. Flag loudly and stop.
+  if (result.category === "urgent_escalation") {
+    await applyLabel(threadId, URGENT_LABEL)
+    await applyLabel(threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "urgent",
+      last_action: "flagged_urgent",
     })
     return true
   }
@@ -266,9 +321,17 @@ export async function processThread(
     return await handleFunctionEnquiry(thread, latest, venue, result.category)
   }
 
-  // --- generic drafter for other categories ---
-  if (result.category === "marketing_cold_outreach" || result.category === "needs_human" || result.category === "accounts_invoices") {
-    // Label only, no draft.
+  // --- label-only categories: no draft, but staff need to see them ---
+  if (
+    result.category === "marketing_cold_outreach" ||
+    result.category === "no_action"
+  ) {
+    // Low-confidence noise (confident noise was archived above). Leave in
+    // the inbox with its category label, no action flag.
+    return true
+  }
+  if (result.category === "needs_human" || result.category === "accounts_invoices") {
+    await applyLabel(threadId, ACTION_LABEL)
     return true
   }
 
@@ -278,14 +341,44 @@ export async function processThread(
     ? await fetchCustomerHistory(customerEmailAddr, thread.threadId)
     : []
   const historyBlock = renderCustomerHistory(history)
+
+  // For existing-booking emails, give the drafter the customer's actual
+  // upcoming NBI reservations so the reply speaks to their booking instead
+  // of asking them to repeat details. The agent can't modify NBI itself, so
+  // the draft always waits for a human (who actions the change, then sends).
+  const extras: Array<{ role: "user" | "assistant"; content: string }> = []
+  if (historyBlock) extras.push({ role: "user", content: historyBlock })
+  if (result.category === "bookings_existing" && customerEmailAddr) {
+    const nbi = await nbiBookingsForEmail(customerEmailAddr)
+    if (nbi.length) {
+      extras.push({
+        role: "user",
+        content:
+          `Customer's upcoming bookings on file (internal — never mention "Now Book It" or booking refs to the customer):\n` +
+          nbi
+            .map(
+              (b) =>
+                `  • ${b.booking_date} ${b.booking_time.slice(0, 5)} — ${b.service}, ${b.pax} pax, status ${b.status}` +
+                (b.notes ? ` (notes: ${b.notes})` : "")
+            )
+            .join("\n") +
+          `\nUse the matching booking's details in the reply. A teammate will action the requested change in the booking system before sending, so write as if the change is done.`,
+      })
+    } else {
+      extras.push({
+        role: "user",
+        content:
+          "No booking was found on file for this email address. Don't tell the customer we can't find them — write the reply naturally and a teammate will verify the booking before sending.",
+      })
+    }
+  }
+
   const d = await draft({
     category: result.category,
     playbook,
     threadHistory: thread.messages.map(toHistoryItem),
     customerName: firstName(latest.from),
-    customExtras: historyBlock
-      ? [{ role: "user", content: historyBlock }]
-      : undefined,
+    customExtras: extras.length ? extras : undefined,
   })
   if (!d.body) return true
 
@@ -372,6 +465,9 @@ async function forwardThread(
       helloMail,
       "Tarte Inbox"
     )
+    // Fully handled: the receiving team owns it now. Out of hello@'s inbox.
+    await applyLabel(thread.threadId, AUTO_HANDLED_LABEL)
+    await archiveThread(thread.threadId)
     await upsertThread({
       thread_id: thread.threadId,
       last_message_id: latest.id,
@@ -387,6 +483,7 @@ async function forwardThread(
     helloMail,
     "Tarte Inbox"
   )
+  await applyLabel(thread.threadId, ACTION_LABEL)
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
@@ -439,6 +536,10 @@ async function deliver(
       "Tarte Team",
       attachments
     )
+    // Replied in full — archive so staff never touch it. A customer reply
+    // brings the thread back into the inbox automatically.
+    await applyLabel(thread.threadId, AUTO_HANDLED_LABEL)
+    await archiveThread(thread.threadId)
     await upsertThread({
       thread_id: thread.threadId,
       last_message_id: latest.id,
@@ -447,6 +548,7 @@ async function deliver(
       last_action: "sent",
       meta: {
         sentMessageId: sentId,
+        sentBody: d.body,
         draftConfidence: d.confidence,
         flags: d.flags,
         attachmentCount: attachments.length,
@@ -461,6 +563,7 @@ async function deliver(
     "Tarte Team",
     attachments
   )
+  await applyLabel(thread.threadId, ACTION_LABEL)
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
@@ -478,6 +581,43 @@ async function deliver(
     },
   })
   return true
+}
+
+/**
+ * In-thread draft for a follow-up nudge (used by followups.ts). Always a
+ * draft — nudges are never auto-sent — and flags the thread for staff.
+ */
+export async function deliverNudgeDraft(
+  thread: ParsedThread,
+  lastCustomer: ParsedMessage,
+  body: string
+): Promise<void> {
+  const helloMail = config().HELLO_MAILBOX
+  const draftId = await createInThreadDraft(
+    {
+      threadId: thread.threadId,
+      to: lastCustomer.from,
+      subject: lastCustomer.subject,
+      inReplyTo: lastCustomer.messageIdHeader ?? "",
+      references: lastCustomer.references ?? lastCustomer.messageIdHeader ?? "",
+    },
+    body,
+    helloMail,
+    "Tarte Team"
+  )
+  await applyLabel(thread.threadId, ACTION_LABEL)
+  await upsertThread({
+    thread_id: thread.threadId,
+    last_message_id: thread.messages[thread.messages.length - 1]!.id,
+    state: "drafted",
+    last_action: "drafted",
+    meta: {
+      draftId,
+      draftedAt: new Date().toISOString(),
+      draftBody: body,
+      nudge: true,
+    },
+  })
 }
 
 // --- function enquiry pipeline ---
@@ -890,13 +1030,18 @@ async function captureEdit(
   )
   if (!sent) return
   const sentBody = sent.bodyText.trim()
-  if (sentBody === draftBody.trim()) return
+  // Record verbatim sends too (edit_distance 0) — they're the trust signal
+  // for promoting a category to auto-send, and silently dropping them left
+  // us blind to how good the drafts actually were.
   await recordLearning({
     thread_id: thread.threadId,
     category: category ?? null,
     our_draft: draftBody,
     sent_reply: sentBody,
-    edit_distance: levenshtein(draftBody.trim(), sentBody),
+    edit_distance:
+      sentBody === draftBody.trim()
+        ? 0
+        : levenshtein(draftBody.trim(), sentBody),
   })
 }
 

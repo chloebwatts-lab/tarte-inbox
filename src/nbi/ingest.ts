@@ -241,6 +241,37 @@ export async function ingestNbi(daysBack = 7): Promise<NbiIngestResult> {
  * service on a given date. Used by the Tea Garden function slot checker
  * to know if the venue is busy with high teas.
  */
+export interface NbiBookingSummary {
+  booking_ref: string
+  booking_date: string
+  booking_time: string
+  service: string
+  pax: number
+  status: string
+  notes: string | null
+}
+
+/**
+ * Upcoming (today onward) non-cancelled NBI bookings for a customer email.
+ * Used when someone emails about an existing booking, so the drafter can
+ * speak to the actual reservation instead of asking them to repeat details.
+ */
+export async function nbiBookingsForEmail(
+  email: string
+): Promise<NbiBookingSummary[]> {
+  const r = await db().query<NbiBookingSummary>(
+    `SELECT booking_ref, booking_date::text, booking_time::text, service, pax, status, notes
+       FROM inbox_nbi_bookings
+      WHERE lower(email) = lower($1)
+        AND booking_date >= (now() AT TIME ZONE 'Australia/Brisbane')::date
+        AND status NOT IN ('Cancelled')
+      ORDER BY booking_date, booking_time
+      LIMIT 5`,
+    [email]
+  )
+  return r.rows
+}
+
 export async function nbiBookingsForDate(
   service: string,
   date: string // YYYY-MM-DD

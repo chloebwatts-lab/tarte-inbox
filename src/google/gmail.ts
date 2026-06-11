@@ -179,6 +179,44 @@ export async function applyLabel(
   })
 }
 
+export async function removeLabel(
+  threadId: string,
+  labelName: string
+): Promise<void> {
+  const labels = await loadLabels()
+  const id = labels.get(labelName.toLowerCase())
+  if (!id) return
+  const g = await gmail()
+  await g.users.threads.modify({
+    userId: "me",
+    id: threadId,
+    requestBody: { removeLabelIds: [id] },
+  })
+}
+
+/**
+ * Removes a thread from the inbox and marks it read. The thread stays in
+ * All Mail with its category labels, and pops back into the inbox if the
+ * sender replies again — nothing is deleted.
+ */
+export async function archiveThread(threadId: string): Promise<void> {
+  const g = await gmail()
+  await g.users.threads.modify({
+    userId: "me",
+    id: threadId,
+    requestBody: { removeLabelIds: ["INBOX", "UNREAD"] },
+  })
+}
+
+export async function markThreadRead(threadId: string): Promise<void> {
+  const g = await gmail()
+  await g.users.threads.modify({
+    userId: "me",
+    id: threadId,
+    requestBody: { removeLabelIds: ["UNREAD"] },
+  })
+}
+
 // --- Drafts + sends, both in-thread ---
 
 interface ReplyContext {
@@ -322,6 +360,53 @@ export async function sendInThreadReply(
   })
   if (!r.data.id) throw new Error("send returned no id")
   return r.data.id
+}
+
+/** Plain-text email in a new thread (used for the daily digest). */
+export async function sendPlainEmail(
+  to: string,
+  subject: string,
+  bodyText: string,
+  fromEmail: string,
+  fromName?: string
+): Promise<string> {
+  const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
+  const rfc822 = [
+    `From: ${fromHeader}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    `Content-Transfer-Encoding: 7bit`,
+    ``,
+    bodyText,
+  ].join("\r\n")
+  const g = await gmail()
+  const r = await g.users.messages.send({
+    userId: "me",
+    requestBody: { raw: encodeRaw(rfc822) },
+  })
+  if (!r.data.id) throw new Error("digest send returned no id")
+  return r.data.id
+}
+
+/** Subject + from for a thread, cheap metadata-only fetch (digest links). */
+export async function getThreadMeta(
+  threadId: string
+): Promise<{ subject: string; from: string }> {
+  const g = await gmail()
+  const r = await g.users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+    metadataHeaders: ["Subject", "From"],
+  })
+  const first = r.data.messages?.[0]
+  const h = (n: string): string =>
+    first?.payload?.headers?.find(
+      (x) => x.name?.toLowerCase() === n.toLowerCase()
+    )?.value ?? ""
+  return { subject: h("Subject"), from: h("From") }
 }
 
 export { mimeTypeFor }

@@ -101,6 +101,90 @@ export const DEFAULTS: Playbook[] = [
     faq: [],
   },
   {
+    category: "bookings_existing",
+    description:
+      "Changes to existing bookings: reschedule, cancel, running late, confirming attendance, dietary notes. The agent can see NBI bookings but can NOT modify them — a human actions the change in Now Book It, so drafts acknowledge and confirm what we'll do.",
+    voice_guidance:
+      VOICE_BASE +
+      " Acknowledge their specific booking (date/time/pax if known from the booking record below). Confirm clearly what will happen ('all sorted', 'we've noted it') — a teammate actions the change in the booking system before this reply is sent, so write as if it's done. For cancellations, be gracious, never guilt-trip, and warmly invite them back.",
+    reply_template: null,
+    auto_send: false,
+    min_confidence: 0.85,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [],
+  },
+  {
+    category: "orders_bespoke",
+    description:
+      "Custom cake, pastry, and catering orders (not venue bookings). Needs details: date needed, pickup or delivery, size/serves, flavours, budget.",
+    voice_guidance:
+      VOICE_BASE +
+      " If they haven't given the essentials, ask ONLY for what's missing: date needed, pickup location (Burleigh or Currumbin), serves, flavour direction. Don't quote prices unless they're in the cheat sheet.",
+    reply_template: null,
+    auto_send: false,
+    min_confidence: 0.85,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [
+      { question: "How much notice do you need for a custom cake?", answer: "" },
+      { question: "Do you deliver cakes / catering?", answer: "" },
+      { question: "What are the cake sizes and starting prices?", answer: "" },
+    ],
+  },
+  {
+    category: "general_enquiries",
+    description:
+      "General questions: hours, dinner, menu/dietaries, parking, vouchers, dogs, lost property, donations. Answer from the cheat sheet; point to tarte.com.au when not covered.",
+    voice_guidance: VOICE_BASE,
+    reply_template: null,
+    auto_send: false,
+    min_confidence: 0.85,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [
+      {
+        question: "Are you open for dinner?",
+        answer:
+          "Not yet, but watch this space! For now we're open during the day, and the Beach House and Tea Garden are available for private evening functions.",
+      },
+      { question: "What are your opening hours?", answer: "" },
+      { question: "Do you have gluten-free / vegan options?", answer: "" },
+      { question: "Are dogs allowed?", answer: "" },
+      { question: "Do you sell gift vouchers?", answer: "" },
+      { question: "Where can we park?", answer: "" },
+    ],
+  },
+  {
+    category: "urgent_escalation",
+    description:
+      "Food safety, illness, injury, allergy incidents, legal/media threats. NEVER drafted by the agent — labelled URGENT and surfaced immediately for a human.",
+    voice_guidance: "Don't draft. Label URGENT and surface to a human immediately.",
+    reply_template: null,
+    auto_send: false,
+    min_confidence: 1.0,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [],
+  },
+  {
+    category: "no_action",
+    description:
+      "Concluded threads (bare thanks, FYI, nothing owed). Labelled and archived — no reply.",
+    voice_guidance: "Don't draft. Archive.",
+    reply_template: null,
+    auto_send: false,
+    min_confidence: 0.8,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [],
+  },
+  {
     category: "job_applications",
     description:
       "Job applications and casual work enquiries. Auto-forwarded to work@tarte.com.au — no reply to the candidate.",

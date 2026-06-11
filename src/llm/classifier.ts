@@ -7,9 +7,14 @@ export const CATEGORIES = [
   "suppliers",
   "reviews",
   "bookings_dine_in",
+  "bookings_existing",
+  "orders_bespoke",
+  "general_enquiries",
   "job_applications",
   "marketing_cold_outreach",
   "accounts_invoices",
+  "urgent_escalation",
+  "no_action",
   "needs_human",
 ] as const
 
@@ -22,9 +27,14 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   suppliers: "Suppliers",
   reviews: "Reviews",
   bookings_dine_in: "Bookings",
+  bookings_existing: "Bookings / Existing",
+  orders_bespoke: "Orders / Cakes & Catering",
+  general_enquiries: "General enquiries",
   job_applications: "Job applications",
   marketing_cold_outreach: "Marketing / Cold outreach",
   accounts_invoices: "Accounts / Invoices",
+  urgent_escalation: "URGENT",
+  no_action: "No action",
   needs_human: "Needs human",
 }
 
@@ -40,12 +50,22 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
   reviews:
     "Notification of a Google/Tripadvisor/Yelp review, or a customer feedback email.",
   bookings_dine_in:
-    "A regular dine-in reservation request. These should normally go through Now Book It — flag if landed in email.",
+    "A NEW dine-in reservation request. These should normally go through Now Book It — flag if landed in email.",
+  bookings_existing:
+    "About a booking that ALREADY EXISTS: change of time/date/pax, cancellation, running late, confirming attendance, dietary notes for an upcoming visit, replying to a booking reminder, can't reach us by phone about their reservation.",
+  orders_bespoke:
+    "A cake, pastry, or catering ORDER (custom cakes, birthday cakes, celebration cakes, bulk pastry orders, takeaway catering) — not a venue booking.",
+  general_enquiries:
+    "General questions: opening hours, dinner service, dietary/gluten-free/vegan options on the menu, parking, gift vouchers, dogs, where to find us, lost property, donation/sponsorship requests, general 'do you do X?' questions.",
   job_applications: "A CV / job application / casual work enquiry.",
   marketing_cold_outreach:
     "Unsolicited sales pitch, agency outreach, SEO/marketing pitch, cold B2B offer.",
   accounts_invoices:
     "Invoices to pay, bills, statements, accounting matters destined for the accounts team.",
+  urgent_escalation:
+    "URGENT: food safety / illness after eating with us, injury on premises, allergy incident, threat of legal action or media, anything where a slow or wrong reply does real damage.",
+  no_action:
+    "Thread is finished and needs no reply: a bare 'thanks!' / 'see you then' closure, an FYI with no question, a vendor notification already dealt with.",
   needs_human:
     "Doesn't fit other categories or is ambiguous / sensitive. Default for low confidence.",
 }
@@ -69,10 +89,15 @@ ${(Object.keys(CATEGORY_DESCRIPTIONS) as Category[])
 Rules:
 - If the email is a function/event enquiry mentioning a number over 12 → tea_garden_functions; under or unspecified for high tea → tea_garden_high_tea.
 - Beach House mentions or beach-side venue references → events_beach_house_functions.
+- NEW reservation request → bookings_dine_in. Anything about an EXISTING booking (change, cancel, late, confirm, add dietary note) → bookings_existing — even mid-thread replies.
+- Cake / pastry / catering orders → orders_bespoke, even when vague ("I'd like to order a cake").
+- Questions about dinner, opening hours, menu, dietaries, vouchers, parking → general_enquiries (NOT needs_human — these are answerable).
+- Illness after dining, food safety, injury, allergy incident, legal/media threat → urgent_escalation, even at low confidence. This OVERRIDES the low-confidence rule below.
 - Review notification emails from Google / Tripadvisor / Yelp / etc → reviews.
 - Pitch / agency / SEO / cold offer → marketing_cold_outreach. Be liberal here; default these to low-priority.
+- A thread that has clearly concluded (bare thanks, no question, nothing owed) → no_action.
 - When in doubt, prefer needs_human over a wrong confident answer.
-- Confidence under 0.6 → also coerce category to needs_human.`
+- Confidence under 0.6 → also coerce category to needs_human (EXCEPT urgent_escalation, which sticks).`
 
 export async function classify(
   subject: string,
@@ -126,7 +151,11 @@ function parseJson(text: string): ClassificationResult {
         ? cat
         : "needs_human"
     return {
-      category: conf < 0.6 ? "needs_human" : safeCat,
+      // Low confidence coerces to needs_human — except urgent_escalation,
+      // where a false negative (missed food-safety email) costs far more
+      // than a false positive (human glances at a non-urgent email).
+      category:
+        conf < 0.6 && safeCat !== "urgent_escalation" ? "needs_human" : safeCat,
       confidence: conf,
       rationale: obj.rationale ?? "",
     }

@@ -1,0 +1,203 @@
+// Daily ops digest, emailed to hello@ at ~07:00 Brisbane. The staff workflow
+// becomes: open the digest, click through the action list, done. Everything
+// the agent handled autonomously is reported as counts, not work.
+
+import { sendPlainEmail, getThreadMeta } from "./google/gmail.js"
+import { db } from "./db/pool.js"
+import { config } from "./config.js"
+
+const DIGEST_HOUR_BRISBANE = 7
+
+function brisbaneNow(): { date: string; hour: number; pretty: string } {
+  const now = new Date()
+  const fmt = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    weekday: "short",
+  })
+  const parts = Object.fromEntries(
+    fmt.formatToParts(now).map((p) => [p.type, p.value])
+  )
+  return {
+    date: `${parts["year"]}-${parts["month"]}-${parts["day"]}`,
+    hour: Number(parts["hour"]),
+    pretty: `${parts["weekday"]} ${Number(parts["day"])}/${parts["month"]}`,
+  }
+}
+
+/** True when it's digest o'clock in Brisbane and today's hasn't gone yet. */
+export async function digestDue(): Promise<boolean> {
+  const { date, hour } = brisbaneNow()
+  if (hour < DIGEST_HOUR_BRISBANE) return false
+  const r = await db().query(
+    `SELECT 1 FROM inbox_digest_log WHERE sent_date = $1`,
+    [date]
+  )
+  return r.rows.length === 0
+}
+
+interface ActionThread {
+  thread_id: string
+  category: string | null
+  state: string
+  last_processed_at: Date
+}
+
+function gmailLink(threadId: string): string {
+  return `https://mail.google.com/mail/u/0/#all/${threadId}`
+}
+
+async function threadLines(rows: ActionThread[]): Promise<string[]> {
+  const out: string[] = []
+  for (const t of rows) {
+    try {
+      const m = await getThreadMeta(t.thread_id)
+      const from = m.from.replace(/<[^>]+>/, "").trim() || m.from
+      out.push(
+        `  • ${m.subject || "(no subject)"} — ${from}\n    ${gmailLink(t.thread_id)}`
+      )
+    } catch {
+      out.push(`  • ${gmailLink(t.thread_id)}`)
+    }
+  }
+  return out
+}
+
+export async function sendDailyDigest(): Promise<{ sent: boolean }> {
+  const { date, pretty } = brisbaneNow()
+
+  const urgent = await db().query<ActionThread>(
+    `SELECT thread_id, category, state, last_processed_at FROM inbox_threads
+      WHERE state = 'urgent' AND last_processed_at > now() - interval '7 days'
+      ORDER BY last_processed_at DESC LIMIT 10`
+  )
+  const drafts = await db().query<ActionThread>(
+    `SELECT thread_id, category, state, last_processed_at FROM inbox_threads
+      WHERE state IN ('drafted', 'forward_drafted')
+        AND last_processed_at > now() - interval '7 days'
+      ORDER BY last_processed_at DESC LIMIT 20`
+  )
+  const needsHuman = await db().query<ActionThread>(
+    `SELECT thread_id, category, state, last_processed_at FROM inbox_threads
+      WHERE state = 'classified' AND category IN ('needs_human', 'accounts_invoices')
+        AND last_processed_at > now() - interval '3 days'
+      ORDER BY last_processed_at DESC LIMIT 15`
+  )
+  const pipeline = await db().query<{
+    id: number
+    venue: string
+    state: string
+    customer_name: string | null
+    pax: number | null
+    event_start: Date | null
+    age_days: number
+  }>(
+    `SELECT id, venue, state, customer_name, pax, event_start,
+            EXTRACT(day FROM now() - updated_at)::int AS age_days
+       FROM inbox_bookings
+      WHERE state IN ('slots_proposed', 'slot_selected', 'deposit_invoiced')
+      ORDER BY updated_at`
+  )
+  const handled = await db().query<{ last_action: string; n: number }>(
+    `SELECT last_action, count(*)::int AS n FROM inbox_threads
+      WHERE last_processed_at > now() - interval '24 hours'
+        AND last_action IN ('archived_noreply', 'archived_marketing_cold_outreach',
+                            'archived_no_action', 'sent', 'sent_forward')
+      GROUP BY last_action`
+  )
+
+  const sections: string[] = []
+
+  if (urgent.rows.length) {
+    sections.push(
+      `🚨 URGENT — look at these first:\n` +
+        (await threadLines(urgent.rows)).join("\n")
+    )
+  }
+  if (drafts.rows.length) {
+    sections.push(
+      `✍️  Drafts ready — read, tweak if needed, hit send (${drafts.rows.length}):\n` +
+        (await threadLines(drafts.rows)).join("\n")
+    )
+  }
+  if (needsHuman.rows.length) {
+    sections.push(
+      `🧐 Needs a human decision (${needsHuman.rows.length}):\n` +
+        (await threadLines(needsHuman.rows)).join("\n")
+    )
+  }
+  if (pipeline.rows.length) {
+    const venueName = (v: string): string =>
+      v === "tea_garden" ? "Tea Garden" : "Beach House"
+    sections.push(
+      `📅 Function bookings in flight:\n` +
+        pipeline.rows
+          .map((b) => {
+            const who = b.customer_name ?? "unknown"
+            const paxStr = b.pax ? `, ${b.pax} pax` : ""
+            if (b.state === "slots_proposed")
+              return `  • ${who} (${venueName(b.venue)}${paxStr}) — slots proposed ${b.age_days}d ago, awaiting reply`
+            if (b.state === "deposit_invoiced")
+              return `  • ${who} (${venueName(b.venue)}${paxStr}) — deposit invoiced${b.event_start ? `, event ${new Date(b.event_start).toLocaleDateString("en-AU", { timeZone: "Australia/Brisbane" })}` : ""} — check payment in Xero`
+            return `  • ${who} (${venueName(b.venue)}${paxStr}) — ${b.state.replace(/_/g, " ")}`
+          })
+          .join("\n")
+    )
+  }
+  const handledTotal = handled.rows.reduce((s, r) => s + r.n, 0)
+  if (handledTotal) {
+    const names: Record<string, string> = {
+      archived_noreply: "receipts/notifications archived",
+      archived_marketing_cold_outreach: "cold outreach archived",
+      archived_no_action: "finished threads archived",
+      sent: "replies auto-sent",
+      sent_forward: "forwarded to the right team",
+    }
+    sections.push(
+      `🤖 Handled for you in the last 24h (nothing to do):\n` +
+        handled.rows
+          .map((r) => `  • ${r.n} ${names[r.last_action] ?? r.last_action}`)
+          .join("\n")
+    )
+  }
+
+  const actionCount = urgent.rows.length + drafts.rows.length + needsHuman.rows.length
+  const body =
+    (sections.length
+      ? sections.join("\n\n")
+      : "Nothing needs you today — inbox is clear. 🎉") +
+    `\n\n—\nTarte Inbox agent · ${date}`
+
+  const subject = urgent.rows.length
+    ? `Inbox digest ${pretty} — 🚨 ${urgent.rows.length} URGENT, ${actionCount} to action`
+    : `Inbox digest ${pretty} — ${actionCount} to action`
+
+  await sendPlainEmail(
+    config().HELLO_MAILBOX,
+    subject,
+    body,
+    config().HELLO_MAILBOX,
+    "Tarte Inbox"
+  )
+  await db().query(
+    `INSERT INTO inbox_digest_log (sent_date, summary)
+     VALUES ($1, $2::jsonb)
+     ON CONFLICT (sent_date) DO NOTHING`,
+    [
+      date,
+      JSON.stringify({
+        urgent: urgent.rows.length,
+        drafts: drafts.rows.length,
+        needs_human: needsHuman.rows.length,
+        pipeline: pipeline.rows.length,
+        handled_24h: handledTotal,
+      }),
+    ]
+  )
+  console.log(`[digest] sent for ${date} (${actionCount} action items)`)
+  return { sent: true }
+}

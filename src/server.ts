@@ -68,6 +68,18 @@ app.post("/sync-nbi", async (c) => {
   return c.json(r)
 })
 
+// Manual digest trigger (ignores the 07:00 gate but still once per day —
+// delete today's inbox_digest_log row to re-send).
+app.post("/digest/run", async (c) => {
+  const { sendDailyDigest } = await import("./digest.js")
+  return c.json(await sendDailyDigest())
+})
+
+app.post("/followups/run", async (c) => {
+  const { nudgeStaleBookings } = await import("./followups.js")
+  return c.json(await nudgeStaleBookings())
+})
+
 /**
  * Force the agent to re-process a specific thread. Useful when we've shipped
  * a code/prompt change and want to refresh existing drafts without waiting

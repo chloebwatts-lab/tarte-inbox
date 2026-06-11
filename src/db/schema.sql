@@ -126,6 +126,18 @@ CREATE TABLE IF NOT EXISTS inbox_learnings (
   noted_at          timestamptz NOT NULL DEFAULT now()
 );
 
+-- One nudge per stale booking: set when we draft a follow-up to a customer
+-- who went quiet after we proposed slots.
+ALTER TABLE inbox_bookings
+  ADD COLUMN IF NOT EXISTS nudged_at timestamptz;
+
+-- One row per daily digest sent, keyed by Brisbane calendar date.
+CREATE TABLE IF NOT EXISTS inbox_digest_log (
+  sent_date         date PRIMARY KEY,
+  sent_at           timestamptz NOT NULL DEFAULT now(),
+  summary           jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
 -- Audit log of every run.
 CREATE TABLE IF NOT EXISTS inbox_runs (
   id                bigserial PRIMARY KEY,
