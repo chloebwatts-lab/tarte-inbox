@@ -8,6 +8,7 @@ import {
   applyLabel,
   removeLabel,
   archiveThread,
+  deleteDraft,
   createInThreadDraft,
   sendInThreadReply,
   findOurSentReply,
@@ -555,6 +556,15 @@ async function deliver(
       },
     })
     return true
+  }
+  // Supersede any pending draft we made earlier in this thread (e.g. the
+  // customer followed up before staff sent it) so Gmail never accumulates
+  // stale duplicates.
+  // Best-effort: if the draft was already sent or discarded, deletion no-ops.
+  const prior = await getThreadRow(thread.threadId)
+  const priorDraftId = prior?.meta?.["draftId"] as string | undefined
+  if (priorDraftId) {
+    await deleteDraft(priorDraftId)
   }
   const draftId = await createInThreadDraft(
     ctx,

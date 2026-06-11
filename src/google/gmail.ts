@@ -128,7 +128,12 @@ export async function getThread(threadId: string): Promise<ParsedThread> {
   return {
     threadId,
     historyId: r.data.historyId ?? undefined,
-    messages: (r.data.messages ?? []).map(parseMessage),
+    // Gmail includes UNSENT drafts as thread messages. To the pipeline a
+    // draft is not activity — counting it made the agent mistake its own
+    // pending draft for a human-sent reply one tick after drafting it.
+    messages: (r.data.messages ?? [])
+      .map(parseMessage)
+      .filter((m) => !m.labelIds.includes("DRAFT")),
   }
 }
 
@@ -317,6 +322,19 @@ function buildRfc822(
 
 function encodeRaw(rfc822: string): string {
   return Buffer.from(rfc822, "utf8").toString("base64url")
+}
+
+/** Best-effort draft deletion (draft may already be sent or discarded). */
+export async function deleteDraft(draftId: string): Promise<void> {
+  try {
+    const g = await gmail()
+    await g.users.drafts.delete({ userId: "me", id: draftId })
+  } catch (e) {
+    console.warn(
+      `[gmail] could not delete draft ${draftId}:`,
+      e instanceof Error ? e.message : e
+    )
+  }
 }
 
 export async function createInThreadDraft(
