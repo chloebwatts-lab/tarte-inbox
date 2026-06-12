@@ -7,6 +7,7 @@
 import { classify } from "../llm/classifier.js"
 import { draft } from "../llm/drafter.js"
 import { getPlaybook } from "../db/queries.js"
+import { maybeAllergenBlock } from "../tk/allergens.js"
 
 const CASES = [
   {
@@ -28,6 +29,18 @@ const CASES = [
     body: "Hello, I'd love to order a birthday cake for my daughter's 5th birthday on the 28th of June. Around 20 serves. Do you do custom cakes?",
   },
   {
+    name: "gluten-free question",
+    from: "Emma Wright <emma.wright@gmail.com>",
+    subject: "Gluten free options?",
+    body: "Hi there, my mum is coeliac and we're hoping to come in for lunch next week. Do you have gluten free options? What can she safely eat? Thanks!",
+  },
+  {
+    name: "dairy-free pastry order",
+    from: "Tom Riley <tom.riley@gmail.com>",
+    subject: "Dairy free pastries",
+    body: "Hey, are any of your pastries dairy free? My son has a milk allergy and I'd love to grab him something on Saturday.",
+  },
+  {
     name: "food safety (urgent)",
     from: "Greg Holt <greg.holt@bigpond.com>",
     subject: "Unwell after visiting",
@@ -47,11 +60,16 @@ async function main(): Promise<void> {
       continue
     }
     const playbook = await getPlaybook(r.category)
+    // Mirror the pipeline: dietary mentions pull in the TK allergen matrix.
+    const allergenBlock = await maybeAllergenBlock(c.subject + "\n" + c.body)
     const d = await draft({
       category: r.category,
       playbook,
       threadHistory: [{ from: c.from, date: new Date(), text: c.body }],
       customerName: c.from.split(" ")[0],
+      customExtras: allergenBlock
+        ? [{ role: "user", content: allergenBlock }]
+        : undefined,
     })
     console.log(`DRAFT (confidence ${d.confidence.toFixed(2)}${d.flags.length ? ", flags: " + d.flags.join("/") : ""}):`)
     console.log(d.body)

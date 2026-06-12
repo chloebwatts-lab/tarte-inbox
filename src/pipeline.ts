@@ -40,6 +40,7 @@ import { draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
 import { dequote } from "./lib/dequote.js"
+import { maybeAllergenBlock } from "./tk/allergens.js"
 import {
   getThread as getThreadRow,
   upsertThread,
@@ -374,6 +375,9 @@ export async function processThread(
     }
   }
 
+  const allergenBlock = await maybeAllergenBlock(latest.subject + "\n" + cleanLatestBody)
+  if (allergenBlock) extras.push({ role: "user", content: allergenBlock })
+
   const d = await draft({
     category: result.category,
     playbook,
@@ -527,7 +531,10 @@ async function deliver(
     playbook?.auto_send === true &&
     d.confidence >= (playbook?.min_confidence ?? 0.95) &&
     !d.flags.includes("needs_human") &&
-    !d.flags.includes("needs_floor_layout_check")
+    !d.flags.includes("needs_floor_layout_check") &&
+    // Allergen/dietary answers always get human eyes before sending, no
+    // matter how trusted the category becomes.
+    !d.flags.includes("allergen_question")
 
   if (shouldAutoSend) {
     const sentId = await sendInThreadReply(
@@ -825,6 +832,9 @@ async function handleFunctionEnquiry(
   })
 
   const playbook = await getPlaybook(category)
+  const fnAllergenBlock = await maybeAllergenBlock(
+    latest.subject + "\n" + dequote(latest.bodyText)
+  )
   const slotsBlock = proposed.length
     ? "Available windows that look open:\n" +
       proposed
@@ -877,6 +887,9 @@ async function handleFunctionEnquiry(
     customExtras: [
       ...(historyBlock
         ? [{ role: "user" as const, content: historyBlock }]
+        : []),
+      ...(fnAllergenBlock
+        ? [{ role: "user" as const, content: fnAllergenBlock }]
         : []),
       {
         role: "user",

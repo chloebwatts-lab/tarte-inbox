@@ -138,6 +138,21 @@ CREATE TABLE IF NOT EXISTS inbox_digest_log (
   summary           jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Tracks which TK ingredients have had their allergens assessed (and how).
+-- The allergen tags themselves live on TK's "Ingredient".allergens so staff
+-- can see/correct them in the TK UI; this table only records coverage, so
+-- "no allergens tagged" can be distinguished from "never assessed".
+-- An ingredient only counts as covered when confident = true.
+CREATE TABLE IF NOT EXISTS inbox_allergen_assessments (
+  ingredient_id     text PRIMARY KEY,
+  ingredient_name   text NOT NULL,
+  allergens         jsonb NOT NULL DEFAULT '[]'::jsonb,
+  confident         boolean NOT NULL,
+  rationale         text,
+  assessed_at       timestamptz NOT NULL DEFAULT now(),
+  source            text NOT NULL DEFAULT 'llm'   -- 'llm' | 'human'
+);
+
 -- Audit log of every run.
 CREATE TABLE IF NOT EXISTS inbox_runs (
   id                bigserial PRIMARY KEY,
