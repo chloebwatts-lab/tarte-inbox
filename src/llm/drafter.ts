@@ -147,10 +147,16 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
 // Post-process to strip AI tells the model snuck through despite the prompt.
 function debot(body: string): string {
   const cleaned = body
-    // em-dash / en-dash → comma + space
-    .replace(/[—–]/g, ", ")
-    // double "  " from the replacement above
-    .replace(/, , /g, ", ")
+    // em-dash / en-dash → comma, collapsing any spaces that surrounded the
+    // dash so we never get "word ,  word". Skip when the dash is at the
+    // start of a line (signature separators, bullets).
+    .replace(/[ \t]*[—–]+[ \t]*/g, (m, offset: number, s: string) =>
+      offset === 0 || s[offset - 1] === "\n" ? m : ", "
+    )
+    // tidy any doubled separators / stray space-before-comma
+    .replace(/ +,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/,  +/g, ", ")
     // Hedging openers
     .replace(/^I hope this email finds you well[.,!]?\s*/gim, "")
     .replace(/^I hope you('| a)re well[.,!]?\s*/gim, "")

@@ -672,6 +672,57 @@ async function handleFunctionEnquiry(
 
   let booking = await getBookingByThread(thread.threadId)
 
+  // --- Already locked in: customer replied AFTER a slot was selected /
+  // invoiced / paid. Never re-propose slots or re-invoice — answer their
+  // message as a normal follow-up and hand to a human (numbers changes,
+  // dietaries, logistics all need a person on a committed booking).
+  const COMMITTED_STATES = new Set([
+    "slot_selected",
+    "deposit_invoiced",
+    "deposit_paid",
+    "balance_invoiced",
+    "paid",
+  ])
+  if (booking && COMMITTED_STATES.has(booking.state)) {
+    const playbook = await getPlaybook(category)
+    const allergenQ = await maybeAllergenBlock(
+      latest.subject + "\n" + dequote(latest.bodyText)
+    )
+    const slotLabel = booking.event_start
+      ? new Date(booking.event_start).toLocaleString("en-AU", {
+          timeZone: "Australia/Brisbane",
+          weekday: "long",
+          day: "numeric",
+          month: "long",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : null
+    const d = await draft({
+      category,
+      playbook,
+      threadHistory: thread.messages.map(toHistoryItem),
+      customerName: customerName ?? undefined,
+      customExtras: [
+        ...(allergenQ ? [{ role: "user" as const, content: allergenQ }] : []),
+        {
+          role: "user",
+          content:
+            `This customer already has a CONFIRMED function booking with us` +
+            (slotLabel ? ` (${slotLabel}, ${booking.pax ?? "?"} pax)` : "") +
+            `. They are following up (a question, a change to numbers/dietaries, or logistics). ` +
+            `Do NOT propose new dates or re-pitch packages. Answer their message warmly and briefly. ` +
+            `If they want to change guest numbers, the date, or anything affecting the booking or invoice, acknowledge it and note a teammate will confirm — add "needs_human" to flags so a person actions it.`,
+        },
+      ],
+    })
+    if (d.body) {
+      if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+      await deliver(thread, latest, d, category, playbook)
+    }
+    return true
+  }
+
   // --- Follow-up: customer replied to a slots-proposed booking ---
   // If we've already proposed slots, see whether their reply is a
   // confirmation. Runs for BOTH venues: the deposit invoice + calendar event
