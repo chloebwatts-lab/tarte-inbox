@@ -46,6 +46,24 @@ const CASES = [
     subject: "Unwell after visiting",
     body: "I ate at your cafe yesterday and have been violently ill since last night. I think it was the chicken sandwich. I want to know what you're going to do about this.",
   },
+  {
+    name: "evening function ask",
+    from: "Priya Nair <priya.nair@gmail.com>",
+    subject: "Evening engagement party?",
+    body: "Hi! We're looking at an engagement party for about 25 people, ideally a Friday or Saturday evening around 7pm sometime in September. Do you host evening events? What would it cost?",
+  },
+  {
+    name: "huge group",
+    from: "Dave Connor <dave.connor@company.com.au>",
+    subject: "Christmas party for 80",
+    body: "Hi, our company is looking for a venue for our end of year party, around 80 people, sometime in early December. Can you accommodate us?",
+  },
+  {
+    name: "where are you / dogs / parking",
+    from: "Sue Ellen <sue.ellen@gmail.com>",
+    subject: "Quick questions",
+    body: "Hi! Where exactly are you located? Is there parking nearby and can I bring my dog? Also are you open Mondays?",
+  },
 ]
 
 async function main(): Promise<void> {
