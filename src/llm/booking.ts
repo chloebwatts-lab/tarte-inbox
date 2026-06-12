@@ -36,18 +36,45 @@ Rules:
   "anytime in October", "between the 15th and 25th of March" — fill
   date_range_start + date_range_end (inclusive). Leave preferred_date null.
 - "last weekend in July" → range Sat–Sun of that last weekend. "weekend" implies
-  weekends_only=true. Calculate dates against the year the message was sent.
+  weekends_only=true.
+- Resolve ALL relative dates ("next Saturday", "anytime in October", "the 15th")
+  against the TODAY line at the top of the message. Resolved dates must be
+  today or in the FUTURE — if a stated date has already passed, leave the date
+  fields null and mention it in notes.
 - Times in 24h. If only "lunch" / "dinner" mentioned, leave null.
 - Customer name: their first name if extractable.`
+
+function todayBrisbane(): { date: string; weekday: string } {
+  const now = new Date()
+  return {
+    date: new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Australia/Brisbane",
+    }).format(now),
+    weekday: new Intl.DateTimeFormat("en-AU", {
+      timeZone: "Australia/Brisbane",
+      weekday: "long",
+    }).format(now),
+  }
+}
 
 export async function extractBooking(
   threadText: string
 ): Promise<BookingExtraction> {
+  // Anchor relative dates — without this the model guesses the year and
+  // "next Saturday" can resolve to the past.
+  const today = todayBrisbane()
   const r = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 400,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: threadText.slice(0, 8000) }],
+    messages: [
+      {
+        role: "user",
+        content:
+          `TODAY is ${today.weekday} ${today.date} (Australia/Brisbane).\n\n` +
+          threadText.slice(0, 8000),
+      },
+    ],
   })
   const block = r.content[0]
   if (!block || block.type !== "text") return empty()

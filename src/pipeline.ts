@@ -269,6 +269,22 @@ export async function processThread(
     return true
   }
 
+  // Delivery failures are NOT noise: if an email we sent bounced, a customer
+  // is waiting on a reply that never arrived. Flag loudly, never archive.
+  if (
+    /mailer-daemon|postmaster/i.test(latest.from) &&
+    /deliver|undeliver|fail|return|bounce/i.test(latest.subject)
+  ) {
+    await applyLabel(threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "delivery_failure",
+      last_action: "flagged_bounce",
+    })
+    return true
+  }
+
   // Automated notification (noreply, order confirmation, statement, etc).
   // No human at the other end — label, archive out of the inbox.
   if (isAutomatedReceipt(latest.from, latest.subject)) {
@@ -681,7 +697,58 @@ async function handleFunctionEnquiry(
           })}`
       )
       .join("\n")
-    const conf = await classifyConfirmation(slotsHuman, latest.bodyText)
+    const conf = await classifyConfirmation(slotsHuman, dequote(latest.bodyText))
+
+    // Customer pulled out → close the booking gracefully, never re-pitch.
+    if (conf.action === "declined" && conf.confidence >= 0.8) {
+      await updateBooking(booking.id, { state: "cancelled" })
+      const playbook = await getPlaybook(category)
+      const d = await draft({
+        category,
+        playbook,
+        threadHistory: thread.messages.map(toHistoryItem),
+        customerName: customerName ?? undefined,
+        customExtras: [
+          {
+            role: "user",
+            content:
+              "The customer has DECLINED / is no longer going ahead with the function. Write a short, gracious sign-off: thank them, no guilt-tripping, no re-pitching, warmly invite them back any time. 2-3 sentences.",
+          },
+        ],
+      })
+      if (d.body) await deliver(thread, latest, d, category, playbook)
+      return true
+    }
+
+    // Customer asked a question about the proposal → answer it. Keep the
+    // existing proposed slots (don't re-roll dates under them) and don't
+    // re-run the full pitch.
+    if (conf.action === "question") {
+      const playbook = await getPlaybook(category)
+      const allergenQ = await maybeAllergenBlock(
+        latest.subject + "\n" + dequote(latest.bodyText)
+      )
+      const d = await draft({
+        category,
+        playbook,
+        threadHistory: thread.messages.map(toHistoryItem),
+        customerName: customerName ?? undefined,
+        customExtras: [
+          ...(allergenQ ? [{ role: "user" as const, content: allergenQ }] : []),
+          {
+            role: "user",
+            content:
+              `The customer is asking a QUESTION about a function we've already proposed times for — they haven't picked a slot yet.\n` +
+              (conf.notes ? `Their question (summarised): ${conf.notes}\n` : "") +
+              `Slots already proposed (still on offer — copy labels exactly if you restate them):\n${slotsHuman}\n` +
+              `Drafting rule: answer their question directly from the playbook. Don't repeat the full pitch or re-list every package. End with a light nudge to lock in a time when they're ready.`,
+          },
+        ],
+      })
+      if (d.body) await deliver(thread, latest, d, category, playbook)
+      return true
+    }
+
     if (
       conf.action === "confirmed" &&
       conf.selected_slot_index !== null &&
@@ -759,7 +826,7 @@ async function handleFunctionEnquiry(
               `Confirmed slot: ${slotLabel}\n` +
               `Pax: ${booking.pax ?? "unknown"}\n` +
               `Venue: ${venue === "tea_garden" ? "Tea Garden" : "Beach House"}\n` +
-              `Deposit amount: $${FUNCTION_DEPOSIT_AUD}\n` +
+              `Deposit: $${FUNCTION_DEPOSIT_AUD} save-the-date deposit — it holds their date and comes off the final balance. (Once package and numbers are locked in, a 50% package deposit applies per our policy.)\n` +
               (invoiceUrl
                 ? `Deposit invoice payment link: ${invoiceUrl}\n`
                 : `The deposit invoice is being prepared and will follow separately.\n`) +
@@ -789,8 +856,8 @@ async function handleFunctionEnquiry(
       }
       return true
     }
-    // If not a confirmation (different_time / question / declined),
-    // fall through to the normal drafting flow below.
+    // Only "different_time" falls through — re-extract from their reply
+    // and propose fresh slots for the new ask.
   }
   if (!booking) {
     const id = await insertBooking({
@@ -900,11 +967,35 @@ async function handleFunctionEnquiry(
       ? " The customer gave a wide date range and we've only listed the first few open windows — say plenty of other dates across their range are also available if none of these suit."
       : ""
 
-  const draftingRules = proposed.length
-    ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
-      wideRangeNote +
-      teaGardenCaveat
-    : "No slots are available in the date(s) they gave according to our calendar. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again."
+  // Safety guards the drafter must respect.
+  const guardNotes: string[] = []
+  if (extracted.pax && extracted.pax > 40) {
+    guardNotes.push(
+      `The group size (${extracted.pax}) is larger than our biggest configuration (around 40 standing in the Hideout). Do NOT commit to hosting them — say we'd love to explore options for a group this size and the team will come back to them, and add "needs_human" to flags.`
+    )
+  }
+  const soonCutoff = addDaysStr(todayBrisbaneStr(), 3)
+  if (extracted.preferred_date && extracted.preferred_date <= soonCutoff) {
+    guardNotes.push(
+      `This is a SHORT-NOTICE request (within 3 days). Don't promise the date — say we'll check with the team today whether we can make it happen, and add "needs_human" to flags.`
+    )
+  }
+  const holidaySlots = proposed.filter((s) =>
+    QLD_PUBLIC_HOLIDAYS.has(s.start.slice(0, 10))
+  )
+  if (holidaySlots.length) {
+    guardNotes.push(
+      `One or more proposed dates fall on a QLD public holiday — mention that a public holiday surcharge applies (confirmed at booking).`
+    )
+  }
+
+  const draftingRules =
+    (proposed.length
+      ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
+        wideRangeNote +
+        teaGardenCaveat
+      : "No slots are available in the date(s) they gave according to our calendar. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again.") +
+    (guardNotes.length ? "\nGuards:\n- " + guardNotes.join("\n- ") : "")
 
   const d = await draft({
     category,
@@ -989,12 +1080,32 @@ async function proposeSlotsInRange(
 const EARLIEST_START_HOUR = 8
 const LATEST_START_HOUR = 14
 
+function todayBrisbaneStr(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Brisbane",
+  }).format(new Date())
+}
+
+// QLD public holidays (statewide). Update yearly; Gold Coast Show Day
+// (late Aug, region-gazetted) is deliberately omitted — confirm before adding.
+const QLD_PUBLIC_HOLIDAYS = new Set([
+  "2026-01-01", "2026-01-26", "2026-04-03", "2026-04-04", "2026-04-05",
+  "2026-04-06", "2026-04-25", "2026-05-04", "2026-10-05", "2026-12-25",
+  "2026-12-26", "2026-12-28",
+  "2027-01-01", "2027-01-26", "2027-03-26", "2027-03-27", "2027-03-28",
+  "2027-03-29", "2027-04-25", "2027-05-03", "2027-10-04", "2027-12-25",
+  "2027-12-27", "2027-12-28",
+])
+
 async function proposeSlots(
   venue: Venue,
   dateStr: string,
   timeStr: string | null,
   durationHours: number
 ): Promise<Array<{ start: string; end: string }>> {
+  // Never propose today or the past — same-day functions need a human, and
+  // a past date means the extraction misread (or the enquiry is stale).
+  if (dateStr <= todayBrisbaneStr()) return []
   // Candidate slots: the customer's preferred time (if within daytime
   // hours) + lunch (12:00) + morning (9:30).
   const candidates: Array<{ hour: number; minute: number }> = []
@@ -1057,10 +1168,12 @@ export async function progressBookingToInvoice(bookingId: number): Promise<void>
   const ref = `Function ${b.venue} ${new Date(b.event_start).toISOString().slice(0, 10)}`
   const depositId = await createAuthorisedInvoice({
     contactId,
-    reference: `${ref} — deposit`,
+    reference: `${ref} — save-the-date deposit`,
     lines: [
       {
-        description: `Deposit to hold ${b.venue.replace("_", " ")} function on ${new Date(b.event_start).toLocaleDateString("en-AU")}`,
+        // Matches the published policy: $500 save-the-date holds the date;
+        // the 50% package deposit follows once package + numbers are locked.
+        description: `Save-the-date deposit to hold ${b.venue.replace("_", " ")} function on ${new Date(b.event_start).toLocaleDateString("en-AU", { timeZone: "Australia/Brisbane" })} (applied toward your final balance)`,
         quantity: 1,
         unitAmount: FUNCTION_DEPOSIT_AUD,
       },

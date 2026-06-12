@@ -16,7 +16,7 @@ export const DEFAULTS: Playbook[] = [
       "High tea enquiries at Tea Garden for groups of 12 or fewer. Most arrive via Now Book It; if they come by email, redirect.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Hey {{first_name}},\n\nThanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://nowbookit.com/.../tea-garden\n\nI've attached our functions & events packages in case you'd like to extend the booking or add anything special." +
+      "Hey {{first_name}},\n\nThanks for getting in touch. High tea bookings for 12 or fewer go straight through our booking system — you can pick a date and time here: https://bookings.nowbookit.com/?accountid=06af68f7-183b-467c-8157-953d162e74a0&venueid=12632\n\nI've attached our functions & events packages in case you'd like to extend the booking or add anything special." +
       SIGNOFF,
     auto_send: false,
     min_confidence: 0.8,
@@ -91,7 +91,7 @@ export const DEFAULTS: Playbook[] = [
       "Regular dine-in reservations that came by email instead of Now Book It.",
     voice_guidance: VOICE_BASE,
     reply_template:
-      "Hey {{first_name}},\n\nThanks for reaching out — easiest way to lock this in is our booking system, which shows live availability: https://nowbookit.com/.../book\n\nIf you'd prefer we book it for you, give us a date, time and number of guests and we'll sort it." +
+      "Hey {{first_name}},\n\nThanks for reaching out — easiest way to lock this in is our booking system, which shows live availability: https://bookings.nowbookit.com/?accountid=06af68f7-183b-467c-8157-953d162e74a0&venueid=12632\n\nIf you'd prefer we book it for you, give us a date, time and number of guests and we'll sort it." +
       SIGNOFF,
     auto_send: false,
     min_confidence: 0.85,

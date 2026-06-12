@@ -20,6 +20,8 @@ async function dailyTick(): Promise<void> {
   try {
     // digestDue() gates on Brisbane 07:00 + once-per-day, so polling is cheap.
     if (await digestDue()) {
+      const { xeroKeepalive } = await import("./xero/client.js")
+      await xeroKeepalive()
       const { nudged } = await nudgeStaleBookings()
       if (nudged) console.log(`[followups] drafted ${nudged} nudge(s)`)
       await sendDailyDigest()

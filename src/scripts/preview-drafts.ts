@@ -19,6 +19,8 @@ const SKIP_CATEGORIES = new Set<Category>([
   "marketing_cold_outreach",
   "needs_human",
   "accounts_invoices",
+  "no_action",
+  "urgent_escalation",
 ])
 
 function decode(data: string | undefined | null): string {

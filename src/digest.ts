@@ -84,7 +84,8 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
   )
   const needsHuman = await db().query<ActionThread>(
     `SELECT thread_id, category, state, last_processed_at FROM inbox_threads
-      WHERE state = 'classified' AND category IN ('needs_human', 'accounts_invoices')
+      WHERE ((state = 'classified' AND category IN ('needs_human', 'accounts_invoices'))
+             OR state = 'delivery_failure')
         AND last_processed_at > now() - interval '3 days'
       ORDER BY last_processed_at DESC LIMIT 15`
   )
@@ -170,6 +171,23 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     }
   } catch {
     // digest must never fail on a side-section
+  }
+
+  // Every blank FAQ answer is a question the agent can't answer yet.
+  try {
+    const gaps = await db().query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM inbox_playbooks,
+              jsonb_array_elements(faq) AS f
+        WHERE coalesce(f->>'answer', '') = ''`
+    )
+    const n = gaps.rows[0]?.n ?? 0
+    if (n) {
+      sections.push(
+        `📋 ${n} FAQ answer(s) still blank in the TK admin (kitchen.tarte.com.au/inbox-playbooks) — each one filled in is a question the agent answers perfectly forever.`
+      )
+    }
+  } catch {
+    // never fail the digest on a side-section
   }
 
   const handledTotal = handled.rows.reduce((s, r) => s + r.n, 0)

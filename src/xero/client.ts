@@ -78,6 +78,22 @@ async function ensureXeroAuthed(): Promise<{ tenantId: string }> {
   return { tenantId: tenant.tenantId }
 }
 
+/**
+ * Daily keepalive: Xero refresh tokens die after 60 idle days, and invoices
+ * can easily go quiet for longer than that. Refreshing daily keeps the
+ * rotating refresh token warm so the next invoice never hits a dead link.
+ */
+export async function xeroKeepalive(): Promise<void> {
+  try {
+    await ensureXeroAuthed()
+  } catch (e) {
+    console.error(
+      "[xero] keepalive failed — invoicing may be broken, re-link at /oauth/xero/start:",
+      e instanceof Error ? e.message : e
+    )
+  }
+}
+
 export async function findOrCreateContact(
   email: string,
   name: string
