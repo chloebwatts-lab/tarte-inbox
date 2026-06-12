@@ -85,7 +85,7 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
   const needsHuman = await db().query<ActionThread>(
     `SELECT thread_id, category, state, last_processed_at FROM inbox_threads
       WHERE ((state = 'classified' AND category IN ('needs_human', 'accounts_invoices'))
-             OR state = 'delivery_failure')
+             OR state IN ('delivery_failure', 'draft_failed'))
         AND last_processed_at > now() - interval '3 days'
       ORDER BY last_processed_at DESC LIMIT 15`
   )

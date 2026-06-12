@@ -405,7 +405,7 @@ export async function processThread(
     customerName: firstName(latest.from),
     customExtras: extras.length ? extras : undefined,
   })
-  if (!d.body) return true
+  if (!d.body) return await flagDraftFailure(thread, latest, result.category)
 
   return await deliver(thread, latest, d, result.category, playbook)
 }
@@ -655,6 +655,28 @@ export async function deliverNudgeDraft(
   })
 }
 
+/**
+ * Empty draft body (LLM hiccup / parse fail) must never leave a thread
+ * silently stalled. Flag it for a human and surface it in the digest.
+ */
+async function flagDraftFailure(
+  thread: ParsedThread,
+  latest: ParsedMessage,
+  category: Category
+): Promise<boolean> {
+  await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+  await upsertThread({
+    thread_id: thread.threadId,
+    last_message_id: latest.id,
+    last_history_id: thread.historyId ?? null,
+    state: "draft_failed",
+    last_action: "draft_failed",
+    meta: { category, draftFailedAt: new Date().toISOString() },
+  })
+  console.warn(`[pipeline] empty draft for thread ${thread.threadId} (${category}) — flagged for human`)
+  return true
+}
+
 // --- function enquiry pipeline ---
 
 async function handleFunctionEnquiry(
@@ -716,10 +738,9 @@ async function handleFunctionEnquiry(
         },
       ],
     })
-    if (d.body) {
-      if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
-      await deliver(thread, latest, d, category, playbook)
-    }
+    if (!d.body) return await flagDraftFailure(thread, latest, category)
+    if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+    await deliver(thread, latest, d, category, playbook)
     return true
   }
 
@@ -770,7 +791,8 @@ async function handleFunctionEnquiry(
           },
         ],
       })
-      if (d.body) await deliver(thread, latest, d, category, playbook)
+      if (!d.body) return await flagDraftFailure(thread, latest, category)
+      await deliver(thread, latest, d, category, playbook)
       return true
     }
 
@@ -799,7 +821,8 @@ async function handleFunctionEnquiry(
           },
         ],
       })
-      if (d.body) await deliver(thread, latest, d, category, playbook)
+      if (!d.body) return await flagDraftFailure(thread, latest, category)
+      await deliver(thread, latest, d, category, playbook)
       return true
     }
 
@@ -896,18 +919,17 @@ async function handleFunctionEnquiry(
           },
         ],
       })
-      if (d.body) {
-        // The attached invoice PDF is what staff/customers work from
-        // (Chris 2026-06-12). If invoicing or the PDF export failed, hold
-        // the reply as a draft for a human instead of auto-sending it
-        // incomplete.
-        if (!invoicePdf && !d.flags.includes("needs_human")) {
-          d.flags.push("needs_human")
-        }
-        await deliver(thread, latest, d, category, playbook, {
-          extraAttachments: invoicePdf ? [invoicePdf] : [],
-        })
+      if (!d.body) return await flagDraftFailure(thread, latest, category)
+      // The attached invoice PDF is what staff/customers work from
+      // (Chris 2026-06-12). If invoicing or the PDF export failed, hold
+      // the reply as a draft for a human instead of auto-sending it
+      // incomplete.
+      if (!invoicePdf && !d.flags.includes("needs_human")) {
+        d.flags.push("needs_human")
       }
+      await deliver(thread, latest, d, category, playbook, {
+        extraAttachments: invoicePdf ? [invoicePdf] : [],
+      })
       return true
     }
     // Only "different_time" falls through — re-extract from their reply
@@ -1077,9 +1099,8 @@ async function handleFunctionEnquiry(
       },
     ],
   })
-  if (d.body) {
-    await deliver(thread, latest, d, category, playbook)
-  }
+  if (!d.body) return await flagDraftFailure(thread, latest, category)
+  await deliver(thread, latest, d, category, playbook)
   return true
 }
 
