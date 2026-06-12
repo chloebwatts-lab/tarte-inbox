@@ -730,12 +730,15 @@ async function handleFunctionEnquiry(
   // attached to the email — void it in Xero if a booking falls through),
   // but for Tea Garden the locking-in REPLY carries needs_floor_layout_check
   // so it never auto-sends — a human confirms the layout, then hits send.
+  // Only ever surface daytime, still-future slots — stale evening slots from
+  // before the daytime rule must never be re-offered or confirmable.
+  const liveSlots = booking ? liveDaytimeSlots(booking.proposed_slots) : []
   if (
     booking &&
     booking.state === "slots_proposed" &&
-    booking.proposed_slots.length
+    liveSlots.length
   ) {
-    const slotsHuman = booking.proposed_slots
+    const slotsHuman = liveSlots
       .map(
         (s, i) =>
           `${i + 1}. ${new Date(s.start).toLocaleString("en-AU", {
@@ -804,9 +807,9 @@ async function handleFunctionEnquiry(
       conf.action === "confirmed" &&
       conf.selected_slot_index !== null &&
       conf.selected_slot_index >= 0 &&
-      conf.selected_slot_index < booking.proposed_slots.length
+      conf.selected_slot_index < liveSlots.length
     ) {
-      const chosen = booking.proposed_slots[conf.selected_slot_index]!
+      const chosen = liveSlots[conf.selected_slot_index]!
       await updateBooking(booking.id, {
         state: "slot_selected",
         event_start: new Date(chosen.start),
@@ -1135,6 +1138,28 @@ function todayBrisbaneStr(): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Australia/Brisbane",
   }).format(new Date())
+}
+
+/**
+ * Drops any stored slot that isn't a daytime start or has already passed.
+ * Guards against stale proposed_slots from before the daytime rule existed
+ * (and from any future bug) ever being re-offered to a customer.
+ */
+function liveDaytimeSlots(
+  slots: Array<{ start: string; end: string }>
+): Array<{ start: string; end: string }> {
+  const today = todayBrisbaneStr()
+  return slots.filter((s) => {
+    if (s.start.slice(0, 10) <= today) return false
+    const hour = Number(
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Australia/Brisbane",
+        hour: "2-digit",
+        hour12: false,
+      }).format(new Date(s.start))
+    )
+    return hour >= EARLIEST_START_HOUR && hour <= LATEST_START_HOUR
+  })
 }
 
 // QLD public holidays (statewide). Update yearly; Gold Coast Show Day
