@@ -285,20 +285,20 @@ export async function nbiBookingsForEmail(
  * booking occupies the space (high teas run 90-minute sittings).
  */
 export async function nbiOverlapCount(
-  service: string,
+  servicePattern: string, // ILIKE pattern, e.g. '%high tea%' — NBI service names vary seasonally
   slot: { start: Date; end: Date },
   sittingMinutes: number
 ): Promise<number> {
   const r = await db().query<{ n: number }>(
     `SELECT count(*)::int AS n
        FROM inbox_nbi_bookings
-      WHERE service = $1
+      WHERE service ILIKE $1
         AND status NOT IN ('Cancelled')
         AND ((booking_date::text || ' ' || booking_time::text)::timestamp
                AT TIME ZONE 'Australia/Brisbane') < $3
         AND (((booking_date::text || ' ' || booking_time::text)::timestamp
                + make_interval(mins => $4)) AT TIME ZONE 'Australia/Brisbane') > $2`,
-    [service, slot.start, slot.end, sittingMinutes]
+    [servicePattern, slot.start, slot.end, sittingMinutes]
   )
   return r.rows[0]?.n ?? 0
 }
@@ -329,16 +329,16 @@ export async function nbiSyncStatus(): Promise<{
 }
 
 export async function nbiBookingsForDate(
-  service: string,
+  servicePattern: string, // ILIKE pattern
   date: string // YYYY-MM-DD
 ): Promise<Array<{ pax: number; booking_time: string }>> {
   const r = await db().query<{ pax: number; booking_time: string }>(
     `SELECT pax, booking_time::text
        FROM inbox_nbi_bookings
-      WHERE service = $1 AND booking_date = $2
+      WHERE service ILIKE $1 AND booking_date = $2
         AND status NOT IN ('Cancelled')
       ORDER BY booking_time`,
-    [service, date]
+    [servicePattern, date]
   )
   return r.rows
 }

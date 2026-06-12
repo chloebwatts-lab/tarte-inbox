@@ -864,7 +864,7 @@ async function handleFunctionEnquiry(
     const dates = new Set(proposed.map((s) => s.start.slice(0, 10)))
     const lines: string[] = []
     for (const d of dates) {
-      const bookings = await nbiBookingsForDate("Tea Garden High Tea", d)
+      const bookings = await nbiBookingsForDate("%high tea%", d)
       lines.push(
         `  ${d}: ${bookings.length} high tea booking(s) already in NBI` +
           (bookings.length
@@ -990,11 +990,7 @@ async function proposeSlots(
     // House functions are in the Hideout (private space upstairs), so
     // restaurant bookings downstairs don't block them.
     if (venue === "tea_garden") {
-      const highTeas = await nbiOverlapCount(
-        "Tea Garden High Tea",
-        { start, end },
-        90
-      )
+      const highTeas = await nbiOverlapCount("%high tea%", { start, end }, 90)
       if (highTeas >= 3) continue
     }
     out.push({ start: start.toISOString(), end: end.toISOString() })
