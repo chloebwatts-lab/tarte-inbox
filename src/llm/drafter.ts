@@ -27,7 +27,9 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - On pricing complaints: be gentle but don't grovel — everything is made on site daily with quality ingredients, and our pricing is below market for what's offered.
 - LOCATIONS: Tarte Bakery & Cafe, 2 West Street, Burleigh Heads (walk-in only). Tarte Beach House, Shop 1, 2-4 Thrower Drive, Currumbin: restaurant upstairs (bookable), cafe downstairs (walk-in only), the Tea Garden next door (high teas), and The Hideout private function space upstairs. All spaces are dog-friendly.
 - BOOKING LINK (Beach House restaurant + Tea Garden high tea): https://bookings.nowbookit.com/?accountid=06af68f7-183b-467c-8157-953d162e74a0&venueid=12632 — use this exact URL when pointing customers to book online. NEVER invent or abbreviate a URL; if you don't have a real link, point to tarte.com.au.
-- BREVITY: write like a busy cafe manager — answer what was asked, one warm line, sign off. Don't recite the customer's booking details back at them unless they asked you to confirm something specific. Staff consistently shorten wordy drafts; start short instead.`
+- BREVITY: write like a busy cafe manager — answer what was asked, one warm line, sign off. Don't recite the customer's booking details back at them unless they asked you to confirm something specific. Staff consistently shorten wordy drafts; start short instead.
+- NEVER state a specific booking date, time, guest count or reference number unless it is given to you in the thread or the booking context. If you don't have it, stay general ("your upcoming booking", "your reservation") — do NOT guess. Inventing a wrong date in a confirmation or cancellation is worse than staying general.
+- PHONE CALLBACKS: if a customer asks to call or for a phone number and you don't have one in the cheat sheet, don't recite a website as "the number". Say we're happy to help right here over email, or ask for their number and a good time and we'll call them.`
 
 const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner): warm, friendly, professional, never gushing. Australian English.
 
@@ -98,11 +100,26 @@ function renderThread(
     .join("\n\n---\n\n")
 }
 
+function todayLineBrisbane(): string {
+  const now = new Date()
+  const weekday = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+  }).format(now)
+  const date = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Brisbane",
+  }).format(now)
+  return `${weekday} ${date}`
+}
+
 export async function draft(req: DraftRequest): Promise<DraftResult> {
   const system = SYSTEM_BASE + renderPlaybook(req.playbook)
   const user =
     `Reply to the latest message in this thread.` +
     (req.customerName ? ` Customer first name: ${req.customerName}.` : "") +
+    // Anchor relative time words so the draft never invents "tomorrow" /
+    // "this weekend". The model previously had no date awareness at all.
+    ` Today is ${todayLineBrisbane()} (Brisbane). Only use a relative day word ("today", "tomorrow", "this Saturday") if it is genuinely correct relative to today; otherwise name the date plainly or stay general.` +
     `\n\nThread (oldest first):\n\n` +
     renderThread(req.threadHistory)
   const r = await anthropic().messages.create({

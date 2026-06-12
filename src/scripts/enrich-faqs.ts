@@ -79,6 +79,10 @@ async function main(): Promise<void> {
   seedQuestion(ge, "Is there wheelchair access at each venue?")
   seedQuestion(ge, "Do you have wifi for customers?")
   seedQuestion(ge, "I left something behind — how does lost property work?")
+  seedQuestion(
+    ge,
+    "What's the best phone number to call you on? (Burleigh and Currumbin)"
+  )
   await upsertPlaybook(ge)
   console.log("enriched general_enquiries")
 
