@@ -46,12 +46,14 @@ export async function dishAllergenMatrix(): Promise<DishAllergens[]> {
      SELECT d.name,
             d."menuCategory"::text AS "menuCategory",
             d.venue::text AS venue,
+            -- ::text[] casts matter: node-pg returns enum[] as an unparsed
+            -- string, which broke .join() downstream.
             COALESCE(
-              (SELECT array_agg(DISTINCT a ORDER BY a)
+              (SELECT array_agg(DISTINCT a::text ORDER BY a::text)
                  FROM dish_ingredients di2, unnest(di2.allergens) AS a
                 WHERE di2.dish_id = d.id),
               '{}'
-            ) AS allergens,
+            )::text[] AS allergens,
             -- Best-guess allergens from NOT-confident assessments, minus the
             -- confirmed ones. Warn-only: can add a "likely contains", never
             -- support a "free from".
@@ -67,7 +69,7 @@ export async function dishAllergenMatrix(): Promise<DishAllergens[]> {
                      WHERE di4.dish_id = d.id
                   )),
               '{}'
-            ) AS "likelyAllergens",
+            )::text[] AS "likelyAllergens",
             bool_or(di.category IN ('MEAT')) AS "containsMeat",
             bool_or(di.category IN ('SEAFOOD')) AS "containsSeafood",
             count(*)::int AS "totalIngredients",
