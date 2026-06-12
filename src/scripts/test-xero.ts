@@ -10,6 +10,7 @@ async function main(): Promise<void> {
   if (!stored) throw new Error("xero not linked")
   console.log(`stored token expiry: ${stored.expiry?.toISOString()}`)
   const c = xero()
+  await c.initialize()
   c.setTokenSet({
     access_token: stored.access_token,
     refresh_token: stored.refresh_token ?? undefined,

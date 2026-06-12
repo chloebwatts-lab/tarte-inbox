@@ -49,6 +49,9 @@ async function ensureXeroAuthed(): Promise<{ tenantId: string }> {
   const stored = await getTokens("xero")
   if (!stored) throw new Error("xero not linked — visit /oauth/xero/start")
   const c = xero()
+  // initialize() builds the underlying openid client — without it,
+  // refreshToken() crashes ("reading 'refresh' of undefined"). Idempotent.
+  await c.initialize()
   c.setTokenSet({
     access_token: stored.access_token,
     refresh_token: stored.refresh_token ?? undefined,
