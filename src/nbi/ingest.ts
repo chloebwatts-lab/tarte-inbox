@@ -331,9 +331,13 @@ export async function nbiSyncStatus(): Promise<{
 export async function nbiBookingsForDate(
   servicePattern: string, // ILIKE pattern
   date: string // YYYY-MM-DD
-): Promise<Array<{ pax: number; booking_time: string }>> {
-  const r = await db().query<{ pax: number; booking_time: string }>(
-    `SELECT pax, booking_time::text
+): Promise<Array<{ pax: number; booking_time: string; status: string }>> {
+  const r = await db().query<{
+    pax: number
+    booking_time: string
+    status: string
+  }>(
+    `SELECT pax, booking_time::text, status
        FROM inbox_nbi_bookings
       WHERE service ILIKE $1 AND booking_date = $2
         AND status NOT IN ('Cancelled')

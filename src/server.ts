@@ -80,6 +80,18 @@ app.post("/followups/run", async (c) => {
   return c.json(await nudgeStaleBookings())
 })
 
+app.post("/calendar-sync/run", async (c) => {
+  const { syncCombinedCalendar } = await import("./google/calendar-sync.js")
+  const r = await syncCombinedCalendar()
+  return c.json(
+    r ?? {
+      ok: false,
+      reason:
+        "combined calendar unavailable — re-authorise Google at /oauth/google/start (full calendar scope needed once)",
+    }
+  )
+})
+
 /**
  * Force the agent to re-process a specific thread. Useful when we've shipped
  * a code/prompt change and want to refresh existing drafts without waiting

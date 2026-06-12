@@ -50,6 +50,14 @@ async function nbiTick(): Promise<void> {
   } finally {
     nbiRunning = false
   }
+  // Mirror everything into the combined staff calendar after each ingest.
+  try {
+    const { syncCombinedCalendar } = await import("./google/calendar-sync.js")
+    const s = await syncCombinedCalendar()
+    if (s) console.log(`[calsync] ${s.synced} synced, ${s.removed} removed`)
+  } catch (e) {
+    console.error("[calsync] error:", e instanceof Error ? e.message : e)
+  }
 }
 
 export function startScheduler(): void {

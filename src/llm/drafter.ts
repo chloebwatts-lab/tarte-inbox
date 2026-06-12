@@ -20,7 +20,9 @@ export interface DraftResult {
 // these but must not contradict them.
 const BUSINESS_FACTS = `Business facts (always true, any category):
 - Tarte sells CRULLERS, not churros. Never write "churro".
-- DINNER: we are NOT open for dinner yet. If a customer asks about dinner, evening dining, or dinner bookings, answer with a friendly variation of "not yet, but watch this space" — upbeat, no apology, no promised date. Then redirect to what we DO offer (daytime dining, high tea, functions) if it fits naturally.
+- DINNER & EVENINGS: we are NOT open for dinner and do NOT offer evening events or functions yet — EVERYTHING is daytime, including private functions. If a customer asks about dinner, evening dining, or an evening event, answer with a friendly variation of "not yet, but watch this space" — upbeat, no apology, no promised date — then pivot to daytime options. NEVER propose or agree to a start time after mid-afternoon.
+- DATES: when booking info lists proposed slots, copy the weekday/date/time labels exactly as given. Never compute a weekday yourself.
+- If an enquiry is ambiguous (private hire vs a regular booking, unknown numbers, unclear budget or format), ask 1-2 short clarifying questions instead of guessing.
 - Never offer free goods, vouchers, or comps in a reply.
 - On pricing complaints: be gentle but don't grovel — everything is made on site daily with quality ingredients, and our pricing is below market for what's offered.`
 

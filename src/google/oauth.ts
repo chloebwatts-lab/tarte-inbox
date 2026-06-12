@@ -8,6 +8,9 @@ import { getTokens, saveTokens } from "../db/queries.js"
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.send",
+  // Full calendar scope: needed once to CREATE the combined "Tarte Bookings
+  // (auto)" calendar. Re-authorise at /oauth/google/start after adding.
+  "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.readonly",
 ]

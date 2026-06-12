@@ -859,7 +859,8 @@ async function handleFunctionEnquiry(
           (s) =>
             `  • ${new Date(s.start).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" })}`
         )
-        .join("\n")
+        .join("\n") +
+      "\nCopy these dates, weekdays and times into the reply EXACTLY as written above — never recompute or reword a weekday."
     : "We'll come back to you with available windows shortly."
 
   const dateBlock = extracted.preferred_date
@@ -876,14 +877,17 @@ async function handleFunctionEnquiry(
     const lines: string[] = []
     for (const d of dates) {
       const bookings = await nbiBookingsForDate("%high tea%", d)
+      const tbc = bookings.filter((b) => b.status === "Unconfirmed").length
       lines.push(
         `  ${d}: ${bookings.length} high tea booking(s) already in NBI` +
           (bookings.length
-            ? ` (times: ${bookings.map((b) => b.booking_time.slice(0, 5)).join(", ")})`
+            ? ` (times: ${bookings.map((b) => b.booking_time.slice(0, 5)).join(", ")}${tbc ? `; ${tbc} of these are TBC — held but not locked in` : ""})`
             : "")
       )
     }
-    nbiContext = `\nNow Book It state on proposed dates:\n${lines.join("\n")}\n`
+    nbiContext =
+      `\nNow Book It state on proposed dates:\n${lines.join("\n")}\n` +
+      `If a date the customer wants overlaps a TBC booking, you can say that window is currently held but not yet locked in, so it may free up.\n`
   }
 
   const teaGardenCaveat =
@@ -891,8 +895,14 @@ async function handleFunctionEnquiry(
       ? " These Tea Garden slots have already been checked against existing high tea bookings, so propose them confidently. For groups over 12, add one light line that we'll do a final floor-layout check for their group size before locking it in. Never mention 'Now Book It' to the customer."
       : ""
 
+  const wideRangeNote =
+    extracted.date_range_start && extracted.date_range_end
+      ? " The customer gave a wide date range and we've only listed the first few open windows — say plenty of other dates across their range are also available if none of these suit."
+      : ""
+
   const draftingRules = proposed.length
     ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
+      wideRangeNote +
       teaGardenCaveat
     : "No slots are available in the date(s) they gave according to our calendar. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again."
 
@@ -931,6 +941,17 @@ async function handleFunctionEnquiry(
 /** Walk through a date range (inclusive) and return up to MAX_SLOTS_PROPOSED
  *  free time-slots. Optionally restricts to weekends. Stops early once it
  *  has found enough. */
+/** Weekday of a calendar date string, independent of server timezone. */
+function dateStrDow(dateStr: string): number {
+  const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number]
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay() // 0=Sun, 6=Sat
+}
+
+function addDaysStr(dateStr: string, n: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number]
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
+}
+
 async function proposeSlotsInRange(
   venue: Venue,
   startStr: string,
@@ -939,35 +960,34 @@ async function proposeSlotsInRange(
   timeStr: string | null,
   durationHours: number
 ): Promise<Array<{ start: string; end: string }>> {
-  const start = new Date(`${startStr}T00:00:00+10:00`)
-  const end = new Date(`${endStr}T23:59:59+10:00`)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
+  // Walk calendar-date STRINGS, never Date objects: the container runs in
+  // UTC, so Date#getDay()/#getDate() on a +10:00 instant land a day early —
+  // that's how "Saturday 2 August" went to a customer when Aug 2 is a Sunday.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startStr) || !/^\d{4}-\d{2}-\d{2}$/.test(endStr))
+    return []
   const out: Array<{ start: string; end: string }> = []
-  // Walk day-by-day. Bail at 90 days to prevent runaway loops.
-  const MAX_DAYS = 90
+  const MAX_DAYS = 120
+  let cursor = startStr
   let days = 0
-  const cursor = new Date(start)
-  while (cursor <= end && days < MAX_DAYS) {
+  while (cursor <= endStr && days < MAX_DAYS) {
     if (out.length >= MAX_SLOTS_PROPOSED) break
-    const dow = cursor.getDay() // 0=Sun, 6=Sat
-    const isWeekend = dow === 0 || dow === 6
-    if (!weekendsOnly || isWeekend) {
-      const yyyymmdd =
-        cursor.getFullYear() +
-        "-" +
-        pad(cursor.getMonth() + 1) +
-        "-" +
-        pad(cursor.getDate())
-      // For each candidate day, try just one time slot to keep prompt size sane.
-      // Default to the customer's preferred time, else 12:00 (lunch).
-      const slots = await proposeSlots(venue, yyyymmdd, timeStr, durationHours)
+    const dow = dateStrDow(cursor)
+    if (!weekendsOnly || dow === 0 || dow === 6) {
+      // One slot per candidate day to keep prompt size sane.
+      const slots = await proposeSlots(venue, cursor, timeStr, durationHours)
       if (slots.length) out.push(slots[0]!)
     }
-    cursor.setDate(cursor.getDate() + 1)
+    cursor = addDaysStr(cursor, 1)
     days++
   }
   return out
 }
+
+// Daytime venue: nothing starts before 08:00 or after 14:00 (Chris
+// 2026-06-12: "we do not offer nights yet" — that includes functions).
+// Evening requests are ignored here; the drafter explains daytime-only.
+const EARLIEST_START_HOUR = 8
+const LATEST_START_HOUR = 14
 
 async function proposeSlots(
   venue: Venue,
@@ -975,15 +995,18 @@ async function proposeSlots(
   timeStr: string | null,
   durationHours: number
 ): Promise<Array<{ start: string; end: string }>> {
-  // Generate candidate slots: preferred time + lunch (12:00) + evening (18:00).
+  // Candidate slots: the customer's preferred time (if within daytime
+  // hours) + lunch (12:00) + morning (9:30).
   const candidates: Array<{ hour: number; minute: number }> = []
   if (timeStr) {
     const [h, m] = timeStr.split(":").map(Number) as [number, number]
-    if (!Number.isNaN(h)) candidates.push({ hour: h, minute: m ?? 0 })
+    if (!Number.isNaN(h) && h >= EARLIEST_START_HOUR && h <= LATEST_START_HOUR) {
+      candidates.push({ hour: h, minute: m ?? 0 })
+    }
   }
   for (const c of [
     { hour: 12, minute: 0 },
-    { hour: 18, minute: 0 },
+    { hour: 9, minute: 30 },
   ]) {
     if (!candidates.some((x) => x.hour === c.hour && x.minute === c.minute)) {
       candidates.push(c)
