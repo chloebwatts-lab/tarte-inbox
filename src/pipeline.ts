@@ -31,7 +31,7 @@ import {
 } from "./nbi/ingest.js"
 import {
   findOrCreateContact,
-  createDraftInvoice,
+  createAuthorisedInvoice,
   getInvoiceOnlineUrl,
   getInvoicePdf,
 } from "./xero/client.js"
@@ -659,7 +659,8 @@ async function handleFunctionEnquiry(
   // --- Follow-up: customer replied to a slots-proposed booking ---
   // If we've already proposed slots, see whether their reply is a
   // confirmation. Runs for BOTH venues: the deposit invoice + calendar event
-  // are created either way (the Xero invoice stays in DRAFT — easy to void),
+  // are created either way (the invoice is AUTHORISED in Xero with the PDF
+  // attached to the email — void it in Xero if a booking falls through),
   // but for Tea Garden the locking-in REPLY carries needs_floor_layout_check
   // so it never auto-sends — a human confirms the layout, then hits send.
   if (
@@ -762,6 +763,9 @@ async function handleFunctionEnquiry(
               (invoiceUrl
                 ? `Deposit invoice payment link: ${invoiceUrl}\n`
                 : `The deposit invoice is being prepared and will follow separately.\n`) +
+              (invoicePdf
+                ? `The invoice PDF is attached to this email — mention the attachment.\n`
+                : ``) +
               `\nDrafting rule: Thank them for confirming, restate the date/time briefly, ` +
               `mention the deposit invoice and link if provided, and say we look forward to having them. ` +
               `Keep it short.` +
@@ -772,6 +776,13 @@ async function handleFunctionEnquiry(
         ],
       })
       if (d.body) {
+        // The attached invoice PDF is what staff/customers work from
+        // (Chris 2026-06-12). If invoicing or the PDF export failed, hold
+        // the reply as a draft for a human instead of auto-sending it
+        // incomplete.
+        if (!invoicePdf && !d.flags.includes("needs_human")) {
+          d.flags.push("needs_human")
+        }
         await deliver(thread, latest, d, category, playbook, {
           extraAttachments: invoicePdf ? [invoicePdf] : [],
         })
@@ -1021,7 +1032,7 @@ export async function progressBookingToInvoice(bookingId: number): Promise<void>
     b.customer_name
   )
   const ref = `Function ${b.venue} ${new Date(b.event_start).toISOString().slice(0, 10)}`
-  const depositId = await createDraftInvoice({
+  const depositId = await createAuthorisedInvoice({
     contactId,
     reference: `${ref} — deposit`,
     lines: [

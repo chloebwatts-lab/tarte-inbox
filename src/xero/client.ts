@@ -106,7 +106,14 @@ export interface InvoiceLine {
   accountCode?: string
 }
 
-export async function createDraftInvoice(opts: {
+/**
+ * Creates an AUTHORISED invoice (Chris 2026-06-12: no DRAFT-in-Xero approval
+ * step — the human gate is the email review instead; the invoice PDF is
+ * attached to the customer email). Authorised invoices can still be voided
+ * in Xero while unpaid, and the online payment link only works once
+ * authorised anyway.
+ */
+export async function createAuthorisedInvoice(opts: {
   contactId: string
   reference: string
   dueDate?: Date
@@ -127,7 +134,7 @@ export async function createDraftInvoice(opts: {
       unitAmount: l.unitAmount,
       accountCode: l.accountCode ?? "200",
     })),
-    status: Invoice.StatusEnum.DRAFT,
+    status: Invoice.StatusEnum.AUTHORISED,
     lineAmountTypes: LineAmountTypes.Exclusive,
   }
   const r = await xero().accountingApi.createInvoices(tenantId, {
@@ -146,13 +153,9 @@ export async function getInvoiceOnlineUrl(invoiceId: string): Promise<string | u
 
 /**
  * Fetches the PDF of a Xero invoice (current state — re-fetching after an
- * edit in Xero returns the updated PDF). Returns the raw bytes.
- *
- * Note: PDFs themselves aren't "editable" in the conventional sense. If the
- * team spots a mistake, they should edit the invoice in Xero (it's in DRAFT
- * status), then this function will return the corrected PDF on the next
- * fetch. The Xero invoice URL link in the email also points at the live
- * invoice, so it always reflects current edits.
+ * edit in Xero returns the updated PDF). Returns the raw bytes. If the team
+ * spots a mistake, void the invoice in Xero and re-issue; the online link in
+ * the email always reflects the live invoice.
  */
 export async function getInvoicePdf(invoiceId: string): Promise<Buffer> {
   const { tenantId } = await ensureXeroAuthed()
