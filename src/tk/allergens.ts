@@ -12,6 +12,7 @@ export interface DishAllergens {
   menuCategory: string
   venue: string
   allergens: string[]
+  likelyAllergens: string[] // best-guess from unverified ingredients — warn-only
   containsMeat: boolean
   containsSeafood: boolean
   totalIngredients: number
@@ -51,6 +52,22 @@ export async function dishAllergenMatrix(): Promise<DishAllergens[]> {
                 WHERE di2.dish_id = d.id),
               '{}'
             ) AS allergens,
+            -- Best-guess allergens from NOT-confident assessments, minus the
+            -- confirmed ones. Warn-only: can add a "likely contains", never
+            -- support a "free from".
+            COALESCE(
+              (SELECT array_agg(DISTINCT a)
+                 FROM dish_ingredients di3
+                 JOIN inbox_allergen_assessments aa3
+                   ON aa3.ingredient_id = di3.ingredient_id AND NOT aa3.confident,
+                 jsonb_array_elements_text(aa3.allergens) AS a
+                WHERE di3.dish_id = d.id
+                  AND a NOT IN (
+                    SELECT unnest(di4.allergens)::text FROM dish_ingredients di4
+                     WHERE di4.dish_id = d.id
+                  )),
+              '{}'
+            ) AS "likelyAllergens",
             bool_or(di.category IN ('MEAT')) AS "containsMeat",
             bool_or(di.category IN ('SEAFOOD')) AS "containsSeafood",
             count(*)::int AS "totalIngredients",
@@ -80,6 +97,8 @@ export function renderAllergenMatrix(rows: DishAllergens[]): string {
     const flags: string[] = []
     if (r.allergens.length) flags.push(`contains: ${r.allergens.join(", ")}`)
     else flags.push("no allergens tagged")
+    if (r.likelyAllergens.length)
+      flags.push(`likely also: ${r.likelyAllergens.join(", ")}`)
     if (r.containsMeat) flags.push("meat")
     if (r.containsSeafood) flags.push("seafood")
     const verified = r.unassessed === 0
@@ -125,7 +144,7 @@ export async function maybeAllergenBlock(text: string): Promise<string> {
 /** Drafting rules that ride along with the matrix. */
 export const ALLERGEN_DRAFTING_RULES = `Allergen answering rules (CRITICAL — food safety):
 - The menu data above is the ONLY source of truth. Never answer an allergen/dietary question from general knowledge.
-- You may say an item CONTAINS an allergen whenever it's tagged above.
+- You may say an item CONTAINS an allergen whenever it's tagged above. "likely also" allergens may be used to warn someone OFF an item ("the bun likely contains gluten, so best avoided") but never to reassure.
 - You may only say an item is FREE of an allergen if the item has NO [UNVERIFIED] marker and that allergen is absent from its line. If the item is [UNVERIFIED], do not make any "free from" claim for it — answer what you can for verified items and add "needs_human" to flags so a teammate confirms the rest before sending.
 - Every reply that makes any allergen claim MUST include a cross-contamination caveat, e.g. "everything is made in one kitchen that handles gluten, dairy, nuts and other allergens, so we can't guarantee zero traces" — and for serious allergies invite them to mention it to staff on arrival.
 - Vegan/vegetarian: "meat"/"seafood" markers above are reliable; absence of MILK/EGG tags on a verified item implies plant-based candidates, but offer these as suggestions to confirm with staff rather than guarantees.
