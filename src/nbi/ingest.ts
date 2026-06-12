@@ -149,12 +149,19 @@ export async function ingestNbi(daysBack = 7): Promise<NbiIngestResult> {
   const auth = await ensureGoogleAuthed()
   const gmail = google.gmail({ version: "v1", auth })
 
-  const list = await gmail.users.messages.list({
-    userId: "me",
-    q: `from:nowbookit.com has:attachment newer_than:${daysBack}d`,
-    maxResults: 30,
-  })
-  const ids = (list.data.messages ?? []).map((m) => m.id!).filter(Boolean)
+  // Paginate: a long backfill (90d) spans more summary emails than one page.
+  const ids: string[] = []
+  let pageToken: string | undefined
+  do {
+    const list = await gmail.users.messages.list({
+      userId: "me",
+      q: `from:nowbookit.com has:attachment newer_than:${daysBack}d`,
+      maxResults: 100,
+      pageToken,
+    })
+    ids.push(...(list.data.messages ?? []).map((m) => m.id!).filter(Boolean))
+    pageToken = list.data.nextPageToken ?? undefined
+  } while (pageToken && ids.length < 400)
 
   let rowsIngested = 0
   const byService: Record<string, number> = {}
