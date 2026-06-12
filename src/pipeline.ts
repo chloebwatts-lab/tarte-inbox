@@ -8,7 +8,7 @@ import {
   applyLabel,
   removeLabel,
   archiveThread,
-  deleteDraft,
+  deleteThreadDrafts,
   createInThreadDraft,
   sendInThreadReply,
   findOurSentReply,
@@ -24,7 +24,11 @@ import {
   fetchCustomerHistory,
   renderCustomerHistory,
 } from "./google/customer-history.js"
-import { nbiBookingsForDate, nbiBookingsForEmail } from "./nbi/ingest.js"
+import {
+  nbiBookingsForDate,
+  nbiBookingsForEmail,
+  nbiOverlapCount,
+} from "./nbi/ingest.js"
 import {
   findOrCreateContact,
   createDraftInvoice,
@@ -537,6 +541,9 @@ async function deliver(
     !d.flags.includes("allergen_question")
 
   if (shouldAutoSend) {
+    // Sweep any superseded pending drafts so staff don't find a stale draft
+    // under an already-answered thread.
+    await deleteThreadDrafts(thread.threadId)
     const sentId = await sendInThreadReply(
       ctx,
       d.body,
@@ -564,15 +571,10 @@ async function deliver(
     })
     return true
   }
-  // Supersede any pending draft we made earlier in this thread (e.g. the
-  // customer followed up before staff sent it) so Gmail never accumulates
+  // Supersede any pending drafts we made earlier in this thread (e.g. the
+  // customer followed up before staff sent one) so Gmail never accumulates
   // stale duplicates.
-  // Best-effort: if the draft was already sent or discarded, deletion no-ops.
-  const prior = await getThreadRow(thread.threadId)
-  const priorDraftId = prior?.meta?.["draftId"] as string | undefined
-  if (priorDraftId) {
-    await deleteDraft(priorDraftId)
-  }
+  await deleteThreadDrafts(thread.threadId)
   const draftId = await createInThreadDraft(
     ctx,
     d.body,
@@ -656,13 +658,14 @@ async function handleFunctionEnquiry(
 
   // --- Follow-up: customer replied to a slots-proposed booking ---
   // If we've already proposed slots, see whether their reply is a
-  // confirmation. Only run for Beach House (Tea Garden still gates on
-  // floor-layout check, which is a human).
+  // confirmation. Runs for BOTH venues: the deposit invoice + calendar event
+  // are created either way (the Xero invoice stays in DRAFT — easy to void),
+  // but for Tea Garden the locking-in REPLY carries needs_floor_layout_check
+  // so it never auto-sends — a human confirms the layout, then hits send.
   if (
     booking &&
     booking.state === "slots_proposed" &&
-    booking.proposed_slots.length &&
-    venue === "beach_house"
+    booking.proposed_slots.length
   ) {
     const slotsHuman = booking.proposed_slots
       .map(
@@ -754,14 +757,17 @@ async function handleFunctionEnquiry(
               `The customer has just CONFIRMED a function slot. Don't re-ask for confirmation — write a short locking-in reply.\n` +
               `Confirmed slot: ${slotLabel}\n` +
               `Pax: ${booking.pax ?? "unknown"}\n` +
-              `Venue: Beach House\n` +
+              `Venue: ${venue === "tea_garden" ? "Tea Garden" : "Beach House"}\n` +
               `Deposit amount: $${FUNCTION_DEPOSIT_AUD}\n` +
               (invoiceUrl
                 ? `Deposit invoice payment link: ${invoiceUrl}\n`
                 : `The deposit invoice is being prepared and will follow separately.\n`) +
               `\nDrafting rule: Thank them for confirming, restate the date/time briefly, ` +
               `mention the deposit invoice and link if provided, and say we look forward to having them. ` +
-              `Keep it short.`,
+              `Keep it short.` +
+              (venue === "tea_garden"
+                ? ` This is a Tea Garden function: add "needs_floor_layout_check" to flags (a teammate confirms the floor layout before this reply goes out, so write it as locked in — no caveats to the customer).`
+                : ""),
           },
         ],
       })
@@ -794,11 +800,11 @@ async function handleFunctionEnquiry(
     : []
   const historyBlock = renderCustomerHistory(history)
 
-  // Both venues now propose slots from the shared calendar. Tea Garden gets
-  // a caveat in the drafting rule because we can't yet see high teas booked
-  // through Now Book It (no API sync yet) — human still needs to confirm
-  // NBI + floor layout before sending. Beach House is exclusive-use so the
-  // calendar check is authoritative.
+  // Both venues propose slots from the function calendar, cross-checked
+  // against Now Book It bookings (daily CSV ingest): Tea Garden slots with
+  // 3+ overlapping high teas are filtered out in proposeSlots. Beach House
+  // functions run in the Hideout (private space), so downstairs restaurant
+  // bookings don't block them.
 
   // Beach House and Tea Garden: propose slots from the calendar.
   // Three cases:
@@ -871,7 +877,7 @@ async function handleFunctionEnquiry(
 
   const teaGardenCaveat =
     venue === "tea_garden"
-      ? " For Tea Garden function bookings, factor in the Now Book It state above. If there are 3+ high tea bookings on the date, mention that the space looks busy and offer to confirm the layout works. If 0-2, just propose the slots confidently. Never mention 'Now Book It' to the customer."
+      ? " These Tea Garden slots have already been checked against existing high tea bookings, so propose them confidently. For groups over 12, add one light line that we'll do a final floor-layout check for their group size before locking it in. Never mention 'Now Book It' to the customer."
       : ""
 
   const draftingRules = proposed.length
@@ -977,9 +983,21 @@ async function proposeSlots(
     if (out.length >= MAX_SLOTS_PROPOSED) break
     const start = new Date(`${dateStr}T${pad(c.hour)}:${pad(c.minute)}:00+10:00`)
     const end = new Date(start.getTime() + durationHours * 3600_000)
-    if (await isSlotFree(venue, { start, end })) {
-      out.push({ start: start.toISOString(), end: end.toISOString() })
+    if (!(await isSlotFree(venue, { start, end }))) continue
+    // The Google calendar only holds functions we created — Now Book It
+    // bookings live in inbox_nbi_bookings. For Tea Garden, a slot with 3+
+    // overlapping high teas isn't really available (shared space). Beach
+    // House functions are in the Hideout (private space upstairs), so
+    // restaurant bookings downstairs don't block them.
+    if (venue === "tea_garden") {
+      const highTeas = await nbiOverlapCount(
+        "Tea Garden High Tea",
+        { start, end },
+        90
+      )
+      if (highTeas >= 3) continue
     }
+    out.push({ start: start.toISOString(), end: end.toISOString() })
   }
   return out
 }

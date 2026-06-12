@@ -33,7 +33,7 @@ Output STRICT JSON only:
 
 Conventions:
 - ALWAYS open with a greeting line. Use "Hey {first name}," when the name is known, else "Hey there,". Follow with a blank line before the body.
-- ALWAYS sign off with a blank line then "Kind regards," on its own line, then "Tarte Team" on the next line.
+- ALWAYS sign off with a blank line then "Kind Regards," on its own line, then "Tarte Management" on the next line. Exactly that — never "Tarte Team", never lowercase "regards".
 - Warm but brisk. No marketing fluff, no "we appreciate your business".
 - Do NOT use em-dashes (—) or en-dashes (–). They are the most common AI tell. Use a comma, a regular hyphen with spaces (e.g. " - "), a full stop, or a new sentence instead.
 - Avoid other AI tells: "I hope this email finds you well", "delve into", "in essence", "navigate this together", "rest assured". Just say the thing.
@@ -48,7 +48,7 @@ Conventions:
   - If they named a package or event type (high tea, baby shower, etc.), treat it as given.
   - If "Booking flow info" below includes proposed slots, propose THOSE specific dates and times. Do not ask the customer to pick a date again.
 - If a question can't be answered without info you don't have AND that info is genuinely not in the thread, write a short holding reply and add "needs_human" to flags.
-- For function enquiries that require floor-layout confirmation, write a holding reply and add "needs_floor_layout_check" to flags.
+- TEA GARDEN functions over 12 pax: the INITIAL reply (packages + proposed times) is fine to send — include a light line that we'll do a final floor-layout check for their group size before locking it in. Add "needs_floor_layout_check" to flags ONLY when the customer is CONFIRMING a specific slot (the locking-in reply), not on initial proposals.
 
 Flags to use when applicable: needs_human, needs_floor_layout_check, mentions_deposit, propose_slots, redirect_to_nbi.`
 
@@ -124,17 +124,30 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
 
 // Post-process to strip AI tells the model snuck through despite the prompt.
 function debot(body: string): string {
-  return (
-    body
-      // em-dash / en-dash → comma + space
-      .replace(/[—–]/g, ", ")
-      // double "  " from the replacement above
-      .replace(/, , /g, ", ")
-      // Hedging openers
-      .replace(/^I hope this email finds you well[.,!]?\s*/gim, "")
-      .replace(/^I hope you('| a)re well[.,!]?\s*/gim, "")
-      .trim()
-  )
+  const cleaned = body
+    // em-dash / en-dash → comma + space
+    .replace(/[—–]/g, ", ")
+    // double "  " from the replacement above
+    .replace(/, , /g, ", ")
+    // Hedging openers
+    .replace(/^I hope this email finds you well[.,!]?\s*/gim, "")
+    .replace(/^I hope you('| a)re well[.,!]?\s*/gim, "")
+    .trim()
+  return enforceSignoff(cleaned)
+}
+
+// Matches a trailing signoff block: a closing line ("Kind regards," etc.)
+// followed by a Tarte name line. Both lines required, so genuine content
+// ending in "thanks" is never stripped.
+const SIGNOFF_RE =
+  /\n\s*(kind regards|warm regards|best regards|regards|cheers|best|many thanks|thanks so much|thanks),?\s*\n+\s*(the )?tarte[a-z ]*\.?\s*$/i
+
+// The signoff is enforced in code, not just prompted — the model drops or
+// varies it often enough that staff noticed.
+function enforceSignoff(body: string): string {
+  if (!body) return body
+  const stripped = body.replace(SIGNOFF_RE, "").trimEnd()
+  return stripped + "\n\nKind Regards,\nTarte Management"
 }
 
 function parseJson(text: string): DraftResult {

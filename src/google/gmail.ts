@@ -337,6 +337,32 @@ export async function deleteDraft(draftId: string): Promise<void> {
   }
 }
 
+/**
+ * Deletes ALL pending drafts in a thread (best-effort). Used before creating
+ * a replacement draft or auto-sending, so superseded drafts (including ones
+ * whose ids we lost track of) don't pile up for staff.
+ */
+export async function deleteThreadDrafts(threadId: string): Promise<number> {
+  try {
+    const g = await gmail()
+    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
+    let deleted = 0
+    for (const d of r.data.drafts ?? []) {
+      if (d.message?.threadId === threadId && d.id) {
+        await deleteDraft(d.id)
+        deleted++
+      }
+    }
+    return deleted
+  } catch (e) {
+    console.warn(
+      `[gmail] could not sweep drafts for thread ${threadId}:`,
+      e instanceof Error ? e.message : e
+    )
+    return 0
+  }
+}
+
 export async function createInThreadDraft(
   ctx: ReplyContext,
   bodyText: string,

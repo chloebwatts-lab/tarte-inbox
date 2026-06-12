@@ -5,9 +5,9 @@ import type { Playbook } from "../db/queries.js"
 
 const VOICE_BASE =
   'Warm but brisk. Australian English. No corporate fluff, no "we appreciate your business". ' +
-  'Open with "Hey {first name}," (or "Hey there," if no name). Sign off "Kind regards,\nTarte Team".'
+  'Open with "Hey {first name}," (or "Hey there," if no name). Sign off "Kind Regards,\nTarte Management".'
 
-const SIGNOFF = "\n\nKind regards,\nTarte Team"
+const SIGNOFF = "\n\nKind Regards,\nTarte Management"
 
 export const DEFAULTS: Playbook[] = [
   {

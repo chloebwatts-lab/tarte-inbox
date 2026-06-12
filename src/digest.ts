@@ -3,6 +3,7 @@
 // the agent handled autonomously is reported as counts, not work.
 
 import { sendPlainEmail, getThreadMeta } from "./google/gmail.js"
+import { nbiSyncStatus } from "./nbi/ingest.js"
 import { db } from "./db/pool.js"
 import { config } from "./config.js"
 
@@ -148,6 +149,29 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
           .join("\n")
     )
   }
+  // NBI sync visibility — and a loud warning if the daily summary email has
+  // stopped arriving (availability checks degrade silently without it).
+  try {
+    const nbi = await nbiSyncStatus()
+    const ageH = nbi.lastIngest
+      ? (Date.now() - new Date(nbi.lastIngest).getTime()) / 3600_000
+      : Infinity
+    const svc = Object.entries(nbi.byService7d)
+      .map(([s, n]) => `${n} ${s}`)
+      .join(", ")
+    if (ageH > 36) {
+      sections.push(
+        `⚠️  Now Book It sync is STALE — no summary email ingested in ${Math.round(ageH)}h. Check that the NBI daily summary is still being emailed to hello@, or function availability checks will miss high teas.`
+      )
+    } else {
+      sections.push(
+        `📒 Now Book It: synced (last summary ${Math.round(ageH)}h ago). Next 7 days: ${nbi.upcoming7d} bookings${svc ? ` (${svc})` : ""}.`
+      )
+    }
+  } catch {
+    // digest must never fail on a side-section
+  }
+
   const handledTotal = handled.rows.reduce((s, r) => s + r.n, 0)
   if (handledTotal) {
     const names: Record<string, string> = {

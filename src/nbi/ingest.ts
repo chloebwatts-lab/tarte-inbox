@@ -272,6 +272,55 @@ export async function nbiBookingsForEmail(
   return r.rows
 }
 
+/**
+ * How many non-cancelled NBI bookings for a service overlap a time window.
+ * booking_date/booking_time are Brisbane-local; sittingMinutes is how long a
+ * booking occupies the space (high teas run 90-minute sittings).
+ */
+export async function nbiOverlapCount(
+  service: string,
+  slot: { start: Date; end: Date },
+  sittingMinutes: number
+): Promise<number> {
+  const r = await db().query<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM inbox_nbi_bookings
+      WHERE service = $1
+        AND status NOT IN ('Cancelled')
+        AND ((booking_date::text || ' ' || booking_time::text)::timestamp
+               AT TIME ZONE 'Australia/Brisbane') < $3
+        AND (((booking_date::text || ' ' || booking_time::text)::timestamp
+               + make_interval(mins => $4)) AT TIME ZONE 'Australia/Brisbane') > $2`,
+    [service, slot.start, slot.end, sittingMinutes]
+  )
+  return r.rows[0]?.n ?? 0
+}
+
+/** Ingest freshness + upcoming volume, for the daily digest. */
+export async function nbiSyncStatus(): Promise<{
+  lastIngest: Date | null
+  upcoming7d: number
+  byService7d: Record<string, number>
+}> {
+  const r = await db().query<{ last_ingest: Date | null }>(
+    `SELECT max(ingested_at) AS last_ingest FROM inbox_nbi_bookings`
+  )
+  const u = await db().query<{ service: string; n: number }>(
+    `SELECT service, count(*)::int AS n FROM inbox_nbi_bookings
+      WHERE status NOT IN ('Cancelled')
+        AND booking_date >= (now() AT TIME ZONE 'Australia/Brisbane')::date
+        AND booking_date < (now() AT TIME ZONE 'Australia/Brisbane')::date + 7
+      GROUP BY service`
+  )
+  const byService7d: Record<string, number> = {}
+  let upcoming7d = 0
+  for (const row of u.rows) {
+    byService7d[row.service] = row.n
+    upcoming7d += row.n
+  }
+  return { lastIngest: r.rows[0]?.last_ingest ?? null, upcoming7d, byService7d }
+}
+
 export async function nbiBookingsForDate(
   service: string,
   date: string // YYYY-MM-DD
