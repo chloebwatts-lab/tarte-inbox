@@ -126,6 +126,39 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
         (await threadLines(drafts.rows)).join("\n")
     )
   }
+
+  // Website form submissions are answered as standalone drafts addressed to
+  // the real customer (the form arrives from a relay, e.g. Squarespace). They
+  // live in the Drafts folder, not on the form thread — call them out by name
+  // so staff know where to look.
+  const formDrafts = await db().query<{
+    email: string | null
+    category: string | null
+    state: string
+  }>(
+    `SELECT meta->>'formEmail' AS email, meta->>'category' AS category, state
+       FROM inbox_threads
+      WHERE state IN ('form_drafted', 'form_forward_drafted')
+        AND last_processed_at > now() - interval '7 days'
+      ORDER BY last_processed_at DESC LIMIT 20`
+  )
+  if (formDrafts.rows.length) {
+    sections.push(
+      `📬 Website form replies — drafts are in your DRAFTS folder, addressed to each customer (${formDrafts.rows.length}):\n` +
+        formDrafts.rows
+          .map(
+            (r) =>
+              `  • ${r.email ?? "(unknown)"}${
+                r.state === "form_forward_drafted"
+                  ? " — forwarded to work@"
+                  : r.category
+                    ? ` — ${r.category.replace(/_/g, " ")}`
+                    : ""
+              }`
+          )
+          .join("\n")
+    )
+  }
   if (needsHuman.rows.length) {
     sections.push(
       `🧐 Needs a human decision (${needsHuman.rows.length}):\n` +
@@ -207,7 +240,11 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     )
   }
 
-  const actionCount = urgent.rows.length + drafts.rows.length + needsHuman.rows.length
+  const actionCount =
+    urgent.rows.length +
+    drafts.rows.length +
+    needsHuman.rows.length +
+    formDrafts.rows.length
   const body =
     (sections.length
       ? sections.join("\n\n")
