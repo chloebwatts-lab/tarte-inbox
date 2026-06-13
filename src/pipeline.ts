@@ -34,8 +34,11 @@ import {
   findOrCreateContact,
   createAuthorisedInvoice,
   getInvoiceOnlineUrl,
-  getInvoicePdf,
 } from "./xero/client.js"
+import {
+  invoiceConfigReady,
+  generateDepositInvoice,
+} from "./invoice/generate.js"
 import {
   classify,
   CATEGORY_LABELS,
@@ -1090,45 +1093,52 @@ async function handleFunctionEnquiry(
         event_start: new Date(chosen.start),
         event_end: new Date(chosen.end),
       })
-      // Xero invoice creation is gated: when ENABLE_AUTO_INVOICE is false
-      // (default), confirming a slot does NOT raise an invoice in Xero —
-      // a human raises + sends the deposit invoice from Xero. Prevents
-      // auto-created invoices landing in the accounts before approval.
-      let invoiceUrl: string | undefined
-      let invoicePdf: Attachment | undefined
+
+      // Block the slot on the venue calendar so it can't be double-booked
+      // (proposeSlots reads this calendar via isSlotFree). Best-effort.
       try {
-        const updated = await getBookingByThread(thread.threadId)
-        if (config().ENABLE_AUTO_INVOICE && updated) {
-          await progressBookingToInvoice(updated.id)
-          const after = await getBookingByThread(thread.threadId)
-          if (after?.xero_deposit_invoice_id) {
-            const invoiceId = after.xero_deposit_invoice_id
-            invoiceUrl = await getInvoiceOnlineUrl(invoiceId)
-            // Attach current PDF snapshot. If the team edits the invoice
-            // in Xero after this email is generated, they can re-fetch by
-            // having the agent re-tick (or just refer to the Xero URL).
-            try {
-              const pdfBytes = await getInvoicePdf(invoiceId)
-              invoicePdf = {
-                filename: `deposit-invoice-${invoiceId.slice(0, 8)}.pdf`,
-                contentType: "application/pdf",
-                data: pdfBytes,
-              }
-            } catch (e) {
-              console.warn(
-                "[booking] PDF fetch failed, continuing without:",
-                e instanceof Error ? e.message : e
-              )
-            }
+        if (!booking.calendar_event_id) {
+          const calId = await createEvent(venue, {
+            summary: `Function — ${customerName ?? "?"} (${booking.pax ?? "?"} pax) — DEPOSIT PENDING`,
+            description: `Auto-held from inbox booking ${booking.id}. Confirm + invoice before treating as locked.`,
+            start: new Date(chosen.start),
+            end: new Date(chosen.end),
+            attendees: customerEmail ? [customerEmail] : undefined,
+          })
+          await updateBooking(booking.id, { calendar_event_id: calId })
+        }
+      } catch (e) {
+        console.error("[booking] calendar hold failed:", e instanceof Error ? e.message : e)
+      }
+
+      // Generate OUR OWN deposit invoice PDF (no Xero — Chris 2026-06-13) when
+      // the business + bank details are configured; attach it to the draft for
+      // staff to check. If not configured, fall back to "invoice will follow".
+      let invoicePdf: Attachment | undefined
+      let invoiceNumber: string | undefined
+      try {
+        if (invoiceConfigReady()) {
+          const gen = await generateDepositInvoice({
+            bookingId: booking.id,
+            threadId: thread.threadId,
+            customerName: customerName ?? "",
+            customerEmail: customerEmail ?? "",
+            venueLabel: venue === "tea_garden" ? "Tea Garden" : "Beach House",
+            eventDate: new Date(chosen.start),
+            amount: FUNCTION_DEPOSIT_AUD,
+            todayBrisbane: todayBrisbaneStr(),
+          })
+          invoiceNumber = gen.invoiceNumber
+          invoicePdf = {
+            filename: `${gen.invoiceNumber}.pdf`,
+            contentType: "application/pdf",
+            data: gen.pdf,
           }
         }
       } catch (e) {
-        console.error(
-          "[booking] auto-invoice failed:",
-          e instanceof Error ? e.message : e
-        )
+        console.error("[booking] invoice generation failed:", e instanceof Error ? e.message : e)
       }
-      // Draft a confirmation reply with the invoice link
+      // Draft a confirmation reply with the invoice attached
       const playbook = await getPlaybook(category)
       const history = customerEmail
         ? await fetchCustomerHistory(customerEmail, thread.threadId)
@@ -1159,12 +1169,9 @@ async function handleFunctionEnquiry(
               `Pax: ${booking.pax ?? "unknown"}\n` +
               `Venue: ${venue === "tea_garden" ? "Tea Garden" : "Beach House"}\n` +
               `Deposit: $${FUNCTION_DEPOSIT_AUD} save-the-date deposit — it holds their date and comes off the final balance. (Once package and numbers are locked in, a 50% package deposit applies per our policy.)\n` +
-              (invoiceUrl
-                ? `Deposit invoice payment link: ${invoiceUrl}\n`
-                : `The deposit invoice is being prepared and will follow separately.\n`) +
               (invoicePdf
-                ? `The invoice PDF is attached to this email — mention the attachment.\n`
-                : ``) +
+                ? `The deposit invoice (${invoiceNumber}) is ATTACHED to this email as a PDF with our bank details for payment. Mention the attached invoice and that paying it secures the date.\n`
+                : `The deposit invoice is being prepared and will follow separately.\n`) +
               `\nDrafting rule: Thank them for confirming, restate the date/time briefly, ` +
               `mention the deposit invoice and link if provided, and say we look forward to having them. ` +
               `Keep it short.` +

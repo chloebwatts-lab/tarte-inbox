@@ -33,6 +33,26 @@ const schema = z.object({
     .string()
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
+
+  // --- Own-invoice generator (Tarte-branded deposit invoices, no Xero) ---
+  // All optional. The generator only activates once the essentials (business
+  // name, ABN, bank name/BSB/account) are present — otherwise the booking
+  // flow falls back to "deposit invoice will follow" + human flag.
+  INVOICE_BUSINESS_NAME: z.string().optional(),
+  INVOICE_ABN: z.string().optional(),
+  INVOICE_ADDRESS: z.string().optional(), // commas or \n separated
+  INVOICE_EMAIL: z.string().optional(),
+  INVOICE_PHONE: z.string().optional(),
+  INVOICE_BANK_ACCOUNT_NAME: z.string().optional(),
+  INVOICE_BANK_BSB: z.string().optional(),
+  INVOICE_BANK_ACCOUNT_NUMBER: z.string().optional(),
+  INVOICE_LOGO_PATH: z.string().optional(), // relative to /app/attachments
+  INVOICE_GST_REGISTERED: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() === "true"),
+  INVOICE_NUMBER_PREFIX: z.string().default("TARTE"),
+  INVOICE_DEPOSIT_DUE_DAYS: z.coerce.number().default(7),
 })
 
 export type Config = z.infer<typeof schema>

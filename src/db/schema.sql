@@ -131,6 +131,20 @@ CREATE TABLE IF NOT EXISTS inbox_learnings (
 ALTER TABLE inbox_bookings
   ADD COLUMN IF NOT EXISTS nudged_at timestamptz;
 
+-- Tarte-issued deposit invoices (our own PDF, not Xero). One row per invoice;
+-- the bigserial id forms the human invoice number (PREFIX-YYYY-000123).
+CREATE TABLE IF NOT EXISTS inbox_invoices (
+  id                bigserial PRIMARY KEY,
+  invoice_number    text UNIQUE NOT NULL,
+  booking_id        bigint REFERENCES inbox_bookings(id) ON DELETE SET NULL,
+  thread_id         text,
+  customer_name     text,
+  customer_email    text,
+  amount            numeric(10,2) NOT NULL,
+  description       text,
+  created_at        timestamptz NOT NULL DEFAULT now()
+);
+
 -- One row per daily digest sent, keyed by Brisbane calendar date.
 CREATE TABLE IF NOT EXISTS inbox_digest_log (
   sent_date         date PRIMARY KEY,
