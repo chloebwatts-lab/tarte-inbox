@@ -104,7 +104,7 @@ export async function classify(
   fromAddr: string,
   bodyText: string
 ): Promise<ClassificationResult> {
-  const trimmed = bodyText.slice(0, 6000)
+  const trimmed = bodyText.slice(0, 16000)
   const r = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 256,

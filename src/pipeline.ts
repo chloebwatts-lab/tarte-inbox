@@ -54,6 +54,7 @@ import { draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
 import { dequote } from "./lib/dequote.js"
+import { renderFullThread } from "./lib/thread-text.js"
 import { maybeAllergenBlock } from "./tk/allergens.js"
 import {
   getThread as getThreadRow,
@@ -349,6 +350,10 @@ async function handleFormSubmission(
 
   const playbook = await getPlaybook(result.category)
   const allergenBlock = await maybeAllergenBlock(form.subject + "\n" + form.message)
+  // Cross-chain context: this form may be from a customer already mid-thread
+  // elsewhere — pull their other threads so we give consistent, true answers.
+  const formHistory = await fetchCustomerHistory(form.email, thread.threadId)
+  const formHistoryBlock = renderCustomerHistory(formHistory)
   const extras: Array<{ role: "user" | "assistant"; content: string }> = [
     {
       role: "user",
@@ -357,6 +362,7 @@ async function handleFormSubmission(
         (form.interestedIn ? ` They selected interest: "${form.interestedIn}".` : ""),
     },
   ]
+  if (formHistoryBlock) extras.push({ role: "user", content: formHistoryBlock })
   if (allergenBlock) extras.push({ role: "user", content: allergenBlock })
 
   const d = await draft({
@@ -662,7 +668,9 @@ export async function processThread(
 function toHistoryItem(m: ParsedMessage): { from: string; date: Date; text: string } {
   // Dequote so the drafter doesn't see NBI confirmation boilerplate or
   // Outlook-quoted chain noise. Keeps the prompt focused on real content.
-  return { from: m.from, date: m.date, text: dequote(m.bodyText).slice(0, 4000) }
+  // Read the WHOLE message — never lose info to truncation (Chris's rule).
+  // 16k chars ~= 3000 words; covers any realistic email in full.
+  return { from: m.from, date: m.date, text: dequote(m.bodyText).slice(0, 16000) }
 }
 
 function firstName(from: string): string | undefined {
@@ -1038,7 +1046,9 @@ async function handleFunctionEnquiry(
   category: Category
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
-  const fullText = thread.messages.map((m) => m.bodyText).join("\n\n---\n\n")
+  // Full, dequoted thread — booking extraction + invoice-stage detection both
+  // read the ENTIRE conversation, not a truncated slice.
+  const fullText = renderFullThread(thread.messages)
 
   // --- Finalised in-thread? Auto-build the deposit invoice from the FINAL
   // agreed details (date/time/numbers/package) and draft a reply with it
@@ -1081,6 +1091,9 @@ async function handleFunctionEnquiry(
     const allergenQ = await maybeAllergenBlock(
       latest.subject + "\n" + dequote(latest.bodyText)
     )
+    const committedHistory = customerEmail
+      ? renderCustomerHistory(await fetchCustomerHistory(customerEmail, thread.threadId))
+      : ""
     const slotLabel = booking?.event_start
       ? new Date(booking.event_start).toLocaleString("en-AU", {
           timeZone: "Australia/Brisbane",
@@ -1098,6 +1111,7 @@ async function handleFunctionEnquiry(
       customerName: customerName ?? undefined,
       customExtras: [
         ...(allergenQ ? [{ role: "user" as const, content: allergenQ }] : []),
+        ...(committedHistory ? [{ role: "user" as const, content: committedHistory }] : []),
         {
           role: "user",
           content:

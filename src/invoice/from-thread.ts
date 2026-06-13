@@ -4,7 +4,7 @@
 
 import { anthropic, MODEL } from "../llm/client.js"
 import type { ParsedThread } from "../google/gmail.js"
-import { dequote } from "../lib/dequote.js"
+import { renderFullThread } from "../lib/thread-text.js"
 import {
   generateInvoice,
   type LineItem,
@@ -62,9 +62,9 @@ export async function extractInvoiceDetails(
   todayBrisbane: string,
   todayWeekday: string
 ): Promise<InvoiceExtraction> {
-  const body = thread.messages
-    .map((m) => `[${m.date.toISOString().slice(0, 10)}] ${m.from}:\n${dequote(m.bodyText).slice(0, 2500)}`)
-    .join("\n\n---\n\n")
+  // Read the ENTIRE thread — final agreed numbers/dates often sit deep in a
+  // long chain (Chris's rule).
+  const body = renderFullThread(thread.messages)
   const r = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 700,
@@ -72,7 +72,7 @@ export async function extractInvoiceDetails(
     messages: [
       {
         role: "user",
-        content: `TODAY is ${todayWeekday} ${todayBrisbane} (Australia/Brisbane).\n\nThread:\n\n${body.slice(0, 14000)}`,
+        content: `TODAY is ${todayWeekday} ${todayBrisbane} (Australia/Brisbane).\n\nThread:\n\n${body}`,
       },
     ],
   })

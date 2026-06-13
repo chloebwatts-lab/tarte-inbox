@@ -72,7 +72,9 @@ export async function extractBooking(
         role: "user",
         content:
           `TODAY is ${today.weekday} ${today.date} (Australia/Brisbane).\n\n` +
-          threadText.slice(0, 8000),
+          // Caller passes the full dequoted thread; keep it whole (large cap
+          // only as a safety ceiling).
+          threadText.slice(0, 140000),
       },
     ],
   })

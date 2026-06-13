@@ -58,7 +58,7 @@ export async function classifyConfirmation(
         role: "user",
         content:
           `We previously proposed these slots:\n${proposedSlotsHuman}\n\n` +
-          `Customer's reply:\n${customerReply.slice(0, 4000)}`,
+          `Customer's reply:\n${customerReply.slice(0, 16000)}`,
       },
     ],
   })
