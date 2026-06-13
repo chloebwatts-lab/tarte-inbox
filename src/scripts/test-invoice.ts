@@ -1,54 +1,58 @@
-// Renders a sample deposit invoice PDF with placeholder details (no DB/env)
-// so the layout can be eyeballed before real business details are supplied.
-//   npx tsx src/scripts/test-invoice.ts   (writes /tmp/sample-invoice.pdf)
-
+// Renders Jenna Strauch's deposit invoice with Tarte's real details so the
+// design can be eyeballed.   npx tsx src/scripts/test-invoice.ts
 import { writeFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { renderInvoicePdf, type InvoiceConfig } from "../invoice/generate.js"
 
 const cfg: InvoiceConfig = {
   businessName: "Tarte Currumbin Pty Ltd",
-  abn: "00 000 000 000",
+  abn: "81 931 246 394",
   address: "Shop 1, 2-4 Thrower Drive, Currumbin QLD 4223",
   email: "hello@tarte.com.au",
   phone: "",
-  bankAccountName: "Tarte Currumbin Pty Ltd",
-  bankBsb: "000-000",
-  bankAccountNumber: "00000000",
+  bankAccountName: "The Saltwater Currumbin Trust",
+  bankName: "Westpac",
+  bankBsb: "034-604",
+  bankAccountNumber: "436599",
   logoPath: undefined,
   gstRegistered: true,
   prefix: "TARTE",
-  dueDays: 7,
+  dueDays: 14,
 }
 
 async function main(): Promise<void> {
+  const logo = await readFile(new URL("../../assets/tarte-logo.png", import.meta.url)).catch(() => null)
+  const thankyou = await readFile(new URL("../../assets/tarte-thankyou.png", import.meta.url)).catch(() => null)
+  const total = 32 * 89
   const pdf = await renderInvoicePdf({
     cfg,
     input: {
-      bookingId: 1,
+      bookingId: null,
       threadId: "t",
-      customerName: "Kiana Roberts",
-      customerEmail: "kiana@example.com",
-      venueLabel: "Tea Garden",
-      eventDate: new Date("2026-09-20T02:00:00+10:00"),
-      amount: 500,
+      customerName: "Jenna Strauch",
+      customerEmail: "strauch.jenna.e@gmail.com",
+      customerPhone: "+61 417 339 895",
+      event: {
+        eventType: "Baby Shower",
+        packageName: "Private High Tea in The Hideout",
+        dateLabel: "Saturday 1 August 2026  (to confirm)",
+        timeLabel: "12:00pm - 3:00pm",
+        guestsLabel: "32 Adults",
+      },
+      lineItems: [{ description: "High Tea — The Hideout (private)", qty: 32, unitPrice: 89 }],
+      depositPct: 50,
       todayBrisbane: "2026-06-13",
+      depositDueLabel: "Saturday 18 July 2026",
+      totalDueLabel: "Thursday 30 July 2026",
     },
-    invoiceNumber: "TARTE-2026-00042",
-    description: "Deposit to secure your Tea Garden function on 20 September 2026",
-    total: 500,
-    gst: 500 / 11,
-    subtotal: 500 - 500 / 11,
+    invoiceNumber: "TARTE-2026-00001",
+    gross: total,
     issueDate: new Date("2026-06-13T00:00:00+10:00"),
-    dueDate: new Date("2026-06-20T00:00:00+10:00"),
-    logo: null,
+    logo,
+    thankyou,
   })
-  await writeFile("/tmp/sample-invoice.pdf", pdf)
-  console.log(`wrote /tmp/sample-invoice.pdf (${pdf.length} bytes)`)
+  await writeFile("/tmp/jenna-invoice.pdf", pdf)
+  console.log(`wrote /tmp/jenna-invoice.pdf (${pdf.length} bytes, total $${total})`)
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error(e)
-    process.exit(1)
-  })
+main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1) })

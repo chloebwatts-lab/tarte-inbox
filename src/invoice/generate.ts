@@ -1,14 +1,23 @@
-// Tarte-branded deposit invoice PDF generator (no Xero). Produces a clean
-// A4 tax invoice from the configured business + bank details, attached to the
-// booking confirmation draft for staff to check before sending.
+// Tarte-branded event/deposit invoice PDF generator (no Xero). Matches the
+// look of Tarte's real event invoices: sage branding, Beach House logo, event
+// details block, line items, 50% deposit split, bank details and terms.
 
 import PDFDocument from "pdfkit"
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { dirname, join } from "node:path"
 import { config } from "../config.js"
 import { db } from "../db/pool.js"
 
 const ATTACHMENTS_DIR = "/app/attachments"
+const ASSET_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets")
+
+// Tarte brand palette (sage).
+const SAGE = "#9ab5b0"
+const SAGE_DARK = "#6e8d85"
+const INK = "#3a3a3a"
+const MUTED = "#8a8a8a"
+const RULE = "#e2e8e6"
 
 export interface InvoiceConfig {
   businessName: string
@@ -17,6 +26,7 @@ export interface InvoiceConfig {
   email: string
   phone: string
   bankAccountName: string
+  bankName: string
   bankBsb: string
   bankAccountNumber: string
   logoPath: string | undefined
@@ -25,7 +35,6 @@ export interface InvoiceConfig {
   dueDays: number
 }
 
-/** True only when the essentials needed for a valid invoice are configured. */
 export function invoiceConfigReady(): boolean {
   const c = config()
   return Boolean(
@@ -40,12 +49,13 @@ export function invoiceConfigReady(): boolean {
 function invoiceConfig(): InvoiceConfig {
   const c = config()
   return {
-    businessName: c.INVOICE_BUSINESS_NAME ?? "",
+    businessName: c.INVOICE_BUSINESS_NAME ?? "Tarte Currumbin Pty Ltd",
     abn: c.INVOICE_ABN ?? "",
-    address: c.INVOICE_ADDRESS ?? "",
+    address: c.INVOICE_ADDRESS ?? "Shop 1, 2-4 Thrower Drive, Currumbin QLD 4223",
     email: c.INVOICE_EMAIL ?? c.HELLO_MAILBOX,
     phone: c.INVOICE_PHONE ?? "",
     bankAccountName: c.INVOICE_BANK_ACCOUNT_NAME ?? "",
+    bankName: c.INVOICE_BANK_NAME ?? "",
     bankBsb: c.INVOICE_BANK_BSB ?? "",
     bankAccountNumber: c.INVOICE_BANK_ACCOUNT_NUMBER ?? "",
     logoPath: c.INVOICE_LOGO_PATH,
@@ -55,243 +65,347 @@ function invoiceConfig(): InvoiceConfig {
   }
 }
 
-export interface DepositInvoiceInput {
+export interface LineItem {
+  description: string
+  qty: number
+  unitPrice: number
+}
+
+export interface EventDetails {
+  eventType?: string
+  packageName?: string
+  dateLabel?: string
+  timeLabel?: string
+  guestsLabel?: string
+}
+
+export interface InvoiceInput {
   bookingId: number | null
   threadId: string
   customerName: string
   customerEmail: string
-  venueLabel: string // "Tea Garden" | "Beach House"
-  eventDate: Date
-  amount: number
+  customerPhone?: string
+  event?: EventDetails
+  lineItems: LineItem[]
+  // When set (e.g. 50), the invoice shows a deposit + balance split and the
+  // amount due now is the deposit. When null, the full total is due.
+  depositPct?: number | null
   todayBrisbane: string // YYYY-MM-DD
+  // Optional explicit due dates (else derived). ISO yyyy-mm-dd or label.
+  depositDueLabel?: string
+  totalDueLabel?: string
+  notes?: string[]
 }
 
-/** Reserve the next invoice number, or reuse the existing one for this
- *  booking so re-processing a thread never burns a second number. */
-async function reserveInvoiceNumber(
-  input: DepositInvoiceInput,
-  description: string
-): Promise<string> {
-  const { prefix } = invoiceConfig()
-  const year = input.todayBrisbane.slice(0, 4)
-  // Idempotent by booking: if we've already issued a deposit invoice for this
-  // booking, reuse its number.
-  if (input.bookingId != null) {
-    const existing = await db().query<{ invoice_number: string }>(
-      `SELECT invoice_number FROM inbox_invoices
-        WHERE booking_id = $1 AND invoice_number <> 'PENDING'
-        ORDER BY id LIMIT 1`,
-      [input.bookingId]
-    )
-    if (existing.rows[0]) return existing.rows[0].invoice_number
-  }
-  const { rows } = await db().query<{ id: number }>(
-    `INSERT INTO inbox_invoices
-       (invoice_number, booking_id, thread_id, customer_name, customer_email, amount, description)
-     VALUES ('PENDING', $1, $2, $3, $4, $5, $6)
-     RETURNING id`,
-    [
-      input.bookingId,
-      input.threadId,
-      input.customerName,
-      input.customerEmail,
-      input.amount,
-      description,
-    ]
-  )
-  const id = rows[0]!.id
-  const number = `${prefix}-${year}-${String(id).padStart(5, "0")}`
-  await db().query(
-    `UPDATE inbox_invoices SET invoice_number = $1 WHERE id = $2`,
-    [number, id]
-  )
-  return number
-}
-
-function fmtAud(n: number): string {
-  return `$${n.toFixed(2)}`
-}
-
-function fmtDate(d: Date): string {
-  return d.toLocaleDateString("en-AU", {
-    timeZone: "Australia/Brisbane",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  })
-}
+const DEFAULT_NOTES = [
+  "50% deposit due 2 weeks prior to the event to save the date.",
+  "Remaining balance due 2 days prior to the event start time.",
+  "Final numbers and dietaries required 2 days prior to the event.",
+  "Dietary requirements may incur an additional fee.",
+]
 
 export interface GeneratedInvoice {
   pdf: Buffer
   invoiceNumber: string
 }
 
-export async function generateDepositInvoice(
-  input: DepositInvoiceInput
-): Promise<GeneratedInvoice> {
-  const cfg = invoiceConfig()
-  const description = `Deposit to secure your ${input.venueLabel} function on ${fmtDate(input.eventDate)}`
-  const invoiceNumber = await reserveInvoiceNumber(input, description)
-
-  // GST math: the deposit amount is GST-inclusive (AU convention).
-  const total = input.amount
-  const gst = cfg.gstRegistered ? total / 11 : 0
-  const subtotal = total - gst
-
-  const issueDate = new Date(`${input.todayBrisbane}T00:00:00+10:00`)
-  const dueDate = new Date(issueDate.getTime() + cfg.dueDays * 86400_000)
-
-  const logo = await loadLogo(cfg.logoPath)
-
-  const pdf = await renderInvoicePdf({ cfg, input, invoiceNumber, description, total, gst, subtotal, issueDate, dueDate, logo })
-  return { pdf, invoiceNumber }
+async function reserveInvoiceNumber(input: InvoiceInput, amount: number): Promise<string> {
+  const { prefix } = invoiceConfig()
+  const year = input.todayBrisbane.slice(0, 4)
+  if (input.bookingId != null) {
+    const existing = await db().query<{ invoice_number: string }>(
+      `SELECT invoice_number FROM inbox_invoices
+        WHERE booking_id = $1 AND invoice_number <> 'PENDING' ORDER BY id LIMIT 1`,
+      [input.bookingId]
+    )
+    if (existing.rows[0]) return existing.rows[0].invoice_number
+  }
+  const desc = input.event?.packageName ?? input.lineItems[0]?.description ?? "Function"
+  const { rows } = await db().query<{ id: number }>(
+    `INSERT INTO inbox_invoices
+       (invoice_number, booking_id, thread_id, customer_name, customer_email, amount, description)
+     VALUES ('PENDING', $1, $2, $3, $4, $5, $6) RETURNING id`,
+    [input.bookingId, input.threadId, input.customerName, input.customerEmail, amount, desc]
+  )
+  const id = rows[0]!.id
+  const number = `${prefix}-${year}-${String(id).padStart(5, "0")}`
+  await db().query(`UPDATE inbox_invoices SET invoice_number = $1 WHERE id = $2`, [number, id])
+  return number
 }
 
-async function loadLogo(logoPath: string | undefined): Promise<Buffer | null> {
-  if (!logoPath) return null
+function fmtAud(n: number): string {
+  return `$${n.toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function fmtDateLabel(d: Date): string {
+  return d.toLocaleDateString("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  })
+}
+
+async function loadImage(explicit: string | undefined, assetFallback: string): Promise<Buffer | null> {
+  // Prefer a configured logo in the attachments dir; fall back to the bundled
+  // asset so it always renders.
+  if (explicit && !explicit.includes("..") && !explicit.startsWith("/")) {
+    try {
+      return await readFile(join(ATTACHMENTS_DIR, explicit))
+    } catch {
+      /* fall through */
+    }
+  }
   try {
-    // Guard against path escape.
-    if (logoPath.includes("..") || logoPath.startsWith("/")) return null
-    return await readFile(join(ATTACHMENTS_DIR, logoPath))
+    return await readFile(join(ASSET_DIR, assetFallback))
   } catch {
     return null
   }
 }
 
+/** Public: build a full event/deposit invoice, record it, return PDF + number. */
+export async function generateInvoice(input: InvoiceInput): Promise<GeneratedInvoice> {
+  const cfg = invoiceConfig()
+  const gross = input.lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
+  const invoiceNumber = await reserveInvoiceNumber(input, gross)
+  const logo = await loadImage(cfg.logoPath, "tarte-logo.png")
+  const thankyou = await loadImage(undefined, "tarte-thankyou.png")
+  const issueDate = new Date(`${input.todayBrisbane}T00:00:00+10:00`)
+  const pdf = await renderInvoicePdf({ cfg, input, invoiceNumber, gross, issueDate, logo, thankyou })
+  return { pdf, invoiceNumber }
+}
+
+/** Thin wrapper for the save-the-date deposit-only case (live booking flow). */
+export async function generateDepositInvoice(opts: {
+  bookingId: number | null
+  threadId: string
+  customerName: string
+  customerEmail: string
+  venueLabel: string
+  eventDate: Date
+  amount: number
+  todayBrisbane: string
+}): Promise<GeneratedInvoice> {
+  return generateInvoice({
+    bookingId: opts.bookingId,
+    threadId: opts.threadId,
+    customerName: opts.customerName,
+    customerEmail: opts.customerEmail,
+    event: {
+      eventType: "Function",
+      packageName: `${opts.venueLabel} function`,
+      dateLabel: fmtDateLabel(opts.eventDate),
+    },
+    lineItems: [
+      { description: `Save-the-date deposit — ${opts.venueLabel} function`, qty: 1, unitPrice: opts.amount },
+    ],
+    depositPct: null,
+    todayBrisbane: opts.todayBrisbane,
+    notes: DEFAULT_NOTES,
+  })
+}
+
 export function renderInvoicePdf(p: {
   cfg: InvoiceConfig
-  input: DepositInvoiceInput
+  input: InvoiceInput
   invoiceNumber: string
-  description: string
-  total: number
-  gst: number
-  subtotal: number
+  gross: number
   issueDate: Date
-  dueDate: Date
   logo: Buffer | null
+  thankyou: Buffer | null
 }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: 50 })
+    const doc = new PDFDocument({ size: "A4", margin: 0 })
     const chunks: Buffer[] = []
     doc.on("data", (c: Buffer) => chunks.push(c))
     doc.on("end", () => resolve(Buffer.concat(chunks)))
     doc.on("error", reject)
 
-    const { cfg } = p
-    const ink = "#2b2b2b"
-    const muted = "#777777"
-    const left = 50
-    const rightX = 350
+    const { cfg, input } = p
+    const L = 50 // left margin
+    const R = 545 // right edge
+    const W = R - L
 
-    // --- Header: logo + business details ---
-    let headerY = 50
+    // ---- Header band ----
     if (p.logo) {
       try {
-        doc.image(p.logo, left, headerY, { fit: [140, 60] })
+        doc.image(p.logo, L, 44, { fit: [165, 70] })
       } catch {
-        /* bad image — skip */
+        doc.fillColor(SAGE_DARK).fontSize(24).font("Helvetica-Bold").text("Tarte.", L, 50)
       }
     } else {
-      doc.fillColor(ink).fontSize(22).font("Helvetica-Bold").text(cfg.businessName, left, headerY)
+      doc.fillColor(SAGE_DARK).fontSize(24).font("Helvetica-Bold").text("Tarte.", L, 50)
     }
-    // Right header block: business contact details (name is shown large on
-    // the left when there's no logo, so don't repeat it here).
     doc
-      .fillColor(muted)
-      .fontSize(9)
-      .font("Helvetica")
-    const headerLines = [
-      cfg.abn ? `ABN ${cfg.abn}` : "",
-      ...cfg.address.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
-      cfg.email,
-      cfg.phone,
-    ].filter(Boolean)
-    doc.text(headerLines.join("\n"), rightX, headerY, { width: 195, align: "right" })
-
-    // --- Title (left) + meta (right) on the same band ---
-    const titleY = 160
-    doc
-      .fillColor(ink)
-      .fontSize(20)
+      .fillColor(SAGE_DARK)
+      .fontSize(22)
       .font("Helvetica-Bold")
-      .text(cfg.gstRegistered ? "TAX INVOICE" : "INVOICE", left, titleY)
+      .text(cfg.gstRegistered ? "TAX INVOICE" : "INVOICE", R - 220, 50, { width: 220, align: "right" })
+    doc.fillColor(MUTED).fontSize(9.5).font("Helvetica")
+    doc.text("Invoice", R - 220, 82, { width: 130, align: "right" })
+    doc.text("Date", R - 220, 96, { width: 130, align: "right" })
+    doc.fillColor(INK).font("Helvetica-Bold")
+    doc.text(p.invoiceNumber, R - 90, 82, { width: 90, align: "right" })
+    doc.font("Helvetica").fillColor(INK).text(fmtDateLabel(p.issueDate).replace(/^\w+ /, ""), R - 90, 96, { width: 90, align: "right" })
 
-    doc.fontSize(10).font("Helvetica").fillColor(muted)
-    doc.text(`Invoice number`, rightX, titleY, { width: 100, align: "left" })
-    doc.text(`Date issued`, rightX, titleY + 16, { width: 100, align: "left" })
-    doc.text(`Payment due`, rightX, titleY + 32, { width: 100, align: "left" })
-    doc.fillColor(ink).font("Helvetica-Bold")
-    doc.text(p.invoiceNumber, rightX + 100, titleY, { width: 95, align: "right" })
-    doc.font("Helvetica")
-    doc.text(fmtDate(p.issueDate), rightX + 100, titleY + 16, { width: 95, align: "right" })
-    doc.text(fmtDate(p.dueDate), rightX + 100, titleY + 32, { width: 95, align: "right" })
+    doc.moveTo(L, 128).lineTo(R, 128).lineWidth(1).strokeColor(SAGE).stroke()
 
-    // --- Bill to (below the title, left) ---
-    const billY = titleY + 50
-    doc.fillColor(muted).fontSize(10).font("Helvetica").text("Bill to", left, billY)
-    doc
-      .fillColor(ink)
-      .fontSize(12)
-      .font("Helvetica-Bold")
-      .text(p.input.customerName || "Customer", left, billY + 14)
-    doc.fontSize(10).font("Helvetica").fillColor(muted).text(p.input.customerEmail, left, doc.y + 2)
+    // ---- Billed to ----
+    let y = 148
+    doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("BILLED TO", L, y)
+    doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text(input.customerName || "Customer", L, y + 14)
+    doc.fillColor(MUTED).fontSize(10).font("Helvetica")
+    const billLines = [input.customerEmail, input.customerPhone].filter(Boolean) as string[]
+    doc.text(billLines.join("\n"), L, y + 32)
 
-    // --- Line items table ---
-    const tableTop = 290
-    doc.fillColor(ink).fontSize(10).font("Helvetica-Bold")
-    doc.text("Description", left, tableTop)
-    doc.text("Amount", rightX + 100, tableTop, { width: 95, align: "right" })
-    doc.moveTo(left, tableTop + 16).lineTo(545, tableTop + 16).strokeColor("#dddddd").stroke()
-
-    doc.font("Helvetica").fillColor(ink).fontSize(10)
-    const rowY = tableTop + 26
-    doc.text(p.description, left, rowY, { width: 380 })
-    doc.text(fmtAud(p.total), rightX + 100, rowY, { width: 95, align: "right" })
-
-    // --- Totals ---
-    let ty = Math.max(doc.y, rowY) + 24
-    doc.moveTo(rightX, ty).lineTo(545, ty).strokeColor("#dddddd").stroke()
-    ty += 10
-    const totalsRow = (label: string, value: string, bold = false): void => {
-      doc.font(bold ? "Helvetica-Bold" : "Helvetica").fillColor(bold ? ink : muted).fontSize(10)
-      doc.text(label, rightX, ty, { width: 100, align: "left" })
-      doc.fillColor(ink).text(value, rightX + 100, ty, { width: 95, align: "right" })
-      ty += 18
+    // ---- Event details panel (right) ----
+    if (input.event) {
+      const ev = input.event
+      const rows: Array<[string, string]> = []
+      if (ev.eventType) rows.push(["Event", ev.eventType])
+      if (ev.packageName) rows.push(["Package", ev.packageName])
+      if (ev.dateLabel) rows.push(["Date", ev.dateLabel])
+      if (ev.timeLabel) rows.push(["Time", ev.timeLabel])
+      if (ev.guestsLabel) rows.push(["Guests", ev.guestsLabel])
+      const panelX = 300
+      const panelW = R - panelX
+      const panelH = rows.length * 16 + 16
+      doc.roundedRect(panelX, y, panelW, panelH, 6).fill("#f3f7f6")
+      let ry = y + 9
+      for (const [k, v] of rows) {
+        doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text(k, panelX + 12, ry, { width: 60 })
+        doc.fillColor(INK).fontSize(9.5).font("Helvetica").text(v, panelX + 76, ry, { width: panelW - 88, align: "right" })
+        ry += 16
+      }
+      y = Math.max(y + 56, y + panelH)
+    } else {
+      y += 56
     }
-    if (p.cfg.gstRegistered) {
-      totalsRow("Subtotal", fmtAud(p.subtotal))
-      totalsRow("GST (10%)", fmtAud(p.gst))
-    }
-    totalsRow("Total due", fmtAud(p.total), true)
 
-    // --- Payment details ---
-    const payY = ty + 24
-    doc.fillColor(ink).fontSize(11).font("Helvetica-Bold").text("Payment details", left, payY)
-    doc.fontSize(10).font("Helvetica").fillColor(ink)
+    // ---- Line items table ----
+    y += 18
+    const cQty = 330
+    const cUnit = 400
+    const cAmt = R
+    doc.rect(L, y, W, 22).fill(SAGE)
+    doc.fillColor("#ffffff").fontSize(9).font("Helvetica-Bold")
+    doc.text("DESCRIPTION", L + 10, y + 7)
+    doc.text("QTY", cQty, y + 7, { width: 40, align: "right" })
+    doc.text("UNIT PRICE", cUnit - 30, y + 7, { width: 70, align: "right" })
+    doc.text("AMOUNT", cAmt - 90, y + 7, { width: 80, align: "right" })
+    y += 22
+
+    doc.font("Helvetica").fontSize(10).fillColor(INK)
+    for (const li of input.lineItems) {
+      const amt = li.qty * li.unitPrice
+      const rowH = 24
+      doc.fillColor(INK).text(li.description, L + 10, y + 7, { width: cQty - L - 20 })
+      doc.text(String(li.qty), cQty, y + 7, { width: 40, align: "right" })
+      doc.text(fmtAud(li.unitPrice), cUnit - 30, y + 7, { width: 70, align: "right" })
+      doc.text(fmtAud(amt), cAmt - 90, y + 7, { width: 80, align: "right" })
+      doc.moveTo(L, y + rowH).lineTo(R, y + rowH).lineWidth(0.5).strokeColor(RULE).stroke()
+      y += rowH
+    }
+
+    // ---- Totals ----
+    y += 14
+    const total = p.gross
+    const gst = cfg.gstRegistered ? total / 11 : 0
+    const deposit = input.depositPct ? Math.round((total * input.depositPct) / 100 * 100) / 100 : null
+    const balance = deposit != null ? total - deposit : null
+    const tX = 320
+    const labelW = 150
+    const totalRow = (label: string, val: string, opts: { bold?: boolean; sage?: boolean; size?: number } = {}): void => {
+      doc.font(opts.bold ? "Helvetica-Bold" : "Helvetica").fontSize(opts.size ?? 10)
+      doc.fillColor(opts.sage ? SAGE_DARK : MUTED).text(label, tX, y, { width: labelW, align: "left" })
+      doc.fillColor(opts.sage ? SAGE_DARK : INK).text(val, tX + labelW, y, { width: R - tX - labelW, align: "right" })
+      y += opts.size ? opts.size + 8 : 17
+    }
+    if (deposit != null) {
+      totalRow(`Deposit (${input.depositPct}%)`, fmtAud(deposit))
+      totalRow("Balance due", fmtAud(balance!))
+    }
+    doc.moveTo(tX, y + 2).lineTo(R, y + 2).lineWidth(1).strokeColor(SAGE).stroke()
+    y += 8
+    totalRow(cfg.gstRegistered ? "Total (incl. GST)" : "Total", fmtAud(total), { bold: true, sage: true, size: 12 })
+    if (cfg.gstRegistered) {
+      doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Includes GST ${fmtAud(gst)}`, tX, y, { width: R - tX, align: "right" })
+      y += 14
+    }
+
+    // ---- Due dates ----
+    if (input.depositDueLabel || input.totalDueLabel) {
+      y += 6
+      doc.fontSize(9).fillColor(MUTED).font("Helvetica")
+      if (input.depositDueLabel) {
+        doc.font("Helvetica-Bold").fillColor(SAGE_DARK).text("Deposit due", L, y, { continued: true })
+          .font("Helvetica").fillColor(INK).text(`   ${input.depositDueLabel}`)
+      }
+      if (input.totalDueLabel) {
+        doc.font("Helvetica-Bold").fillColor(SAGE_DARK).text("Balance due", L, y + 14, { continued: true })
+          .font("Helvetica").fillColor(INK).text(`   ${input.totalDueLabel}`)
+      }
+      y += 30
+    }
+
+    // ---- Payment details (two columns) ----
+    y += 10
+    doc.moveTo(L, y).lineTo(R, y).lineWidth(0.5).strokeColor(RULE).stroke()
+    y += 14
+    doc.fillColor(SAGE_DARK).fontSize(10).font("Helvetica-Bold").text("PAYMENT DETAILS", L, y)
+    y += 16
+    const colY = y
+    doc.fillColor(INK).fontSize(9.5).font("Helvetica")
     doc.text(
       [
-        `Please transfer to:`,
-        `Account name: ${cfg.bankAccountName}`,
-        `BSB: ${cfg.bankBsb}`,
-        `Account number: ${cfg.bankAccountNumber}`,
+        "Bank transfer",
+        cfg.bankAccountName ? `Account: ${cfg.bankAccountName}` : "",
+        cfg.bankName,
+        cfg.bankBsb ? `BSB: ${cfg.bankBsb}` : "",
+        cfg.bankAccountNumber ? `Account no: ${cfg.bankAccountNumber}` : "",
         `Reference: ${p.invoiceNumber}`,
-      ].join("\n"),
-      left,
-      payY + 18
+      ].filter(Boolean).join("\n"),
+      L,
+      colY,
+      { width: 260 }
     )
+    const bankBottom = doc.y
+    doc.text(
+      ["Credit card", "Payment in store or over the phone", "(incurs a surcharge)"].join("\n"),
+      320,
+      colY,
+      { width: R - 320 }
+    )
+    // Advance below the TALLER of the two columns (bank block is taller).
+    y = Math.max(bankBottom, doc.y) + 18
 
-    // --- Footer note ---
-    doc
-      .fillColor(muted)
-      .fontSize(9)
-      .font("Helvetica")
-      .text(
-        `This deposit secures your date and is applied toward your final balance. ` +
-          `Please use the invoice number as your payment reference. Thank you!`,
-        left,
-        payY + 110,
-        { width: 495 }
-      )
+    // ---- Notes / terms ----
+    const notes = input.notes ?? DEFAULT_NOTES
+    doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("PLEASE NOTE", L, y)
+    y += 13
+    doc.fillColor(MUTED).fontSize(8.5).font("Helvetica")
+    for (const n of notes) {
+      doc.text(`•  ${n}`, L, y, { width: W })
+      y += 13
+    }
+
+    // ---- Business footer + thank you ----
+    const footY = 770
+    doc.fillColor(MUTED).fontSize(8).font("Helvetica")
+    doc.text(
+      [cfg.businessName, cfg.abn ? `ABN ${cfg.abn}` : "", cfg.address, cfg.email].filter(Boolean).join("  ·  "),
+      L,
+      footY,
+      { width: 360 }
+    )
+    if (p.thankyou) {
+      try {
+        doc.image(p.thankyou, R - 110, footY - 14, { fit: [110, 40] })
+      } catch {
+        /* skip */
+      }
+    }
 
     doc.end()
   })

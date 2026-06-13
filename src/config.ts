@@ -44,6 +44,7 @@ const schema = z.object({
   INVOICE_EMAIL: z.string().optional(),
   INVOICE_PHONE: z.string().optional(),
   INVOICE_BANK_ACCOUNT_NAME: z.string().optional(),
+  INVOICE_BANK_NAME: z.string().optional(), // e.g. "Westpac"
   INVOICE_BANK_BSB: z.string().optional(),
   INVOICE_BANK_ACCOUNT_NUMBER: z.string().optional(),
   INVOICE_LOGO_PATH: z.string().optional(), // relative to /app/attachments
