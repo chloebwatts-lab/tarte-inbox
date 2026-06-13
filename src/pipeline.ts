@@ -222,12 +222,26 @@ export function parseFormSubmission(latest: ParsedMessage): FormSubmission | nul
   }
   if (!email) return null
 
-  // The message body sometimes spans multiple lines until the next labelled
-  // field or the relay's footer links.
-  const msgMatch = body.match(
-    /^\s*Message\s*:?\s*([\s\S]*?)(?:\n\s*(?:Interested in|Phone|Create Invoice|Manage Submissions|Does this submission|Sent via)\b|$)/im
-  )
-  const message = (msgMatch?.[1] ?? field(body, "Message") ?? body).trim()
+  // The message often spans multiple lines. Walk lines: start at "Message:",
+  // collect until a line that begins another known field or relay footer.
+  // (A single multiline regex with /m mis-terminates on the first line end.)
+  const TERMINATORS =
+    /^\s*(?:Interested in|Phone|Create Invoice|Manage Submissions|Does this submission|Sent via|Report it)\b/i
+  const lines = body.split(/\r?\n/)
+  const startIdx = lines.findIndex((l) => /^\s*Message\s*:/i.test(l))
+  let message: string
+  if (startIdx >= 0) {
+    const collected: string[] = [
+      lines[startIdx]!.replace(/^\s*Message\s*:?\s*/i, ""),
+    ]
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      if (TERMINATORS.test(lines[i]!)) break
+      collected.push(lines[i]!)
+    }
+    message = collected.join("\n").trim()
+  } else {
+    message = body.trim()
+  }
 
   return {
     name: field(body, "Name"),
