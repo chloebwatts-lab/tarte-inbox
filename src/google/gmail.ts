@@ -434,6 +434,39 @@ export async function sendPlainEmail(
   return r.data.id
 }
 
+/**
+ * Creates a DRAFT to a fresh recipient in a NEW thread (not attached to any
+ * existing thread). Used to reply to the real customer behind a website
+ * form-submission relay, instead of replying to the relay address.
+ */
+export async function createStandaloneDraft(
+  to: string,
+  subject: string,
+  bodyText: string,
+  fromEmail: string,
+  fromName?: string
+): Promise<string> {
+  const subj = subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`
+  const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
+  const rfc822 = [
+    `From: ${fromHeader}`,
+    `To: ${to}`,
+    `Subject: ${subj}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    `Content-Transfer-Encoding: 7bit`,
+    ``,
+    bodyText,
+  ].join("\r\n")
+  const g = await gmail()
+  const r = await g.users.drafts.create({
+    userId: "me",
+    requestBody: { message: { raw: encodeRaw(rfc822) } },
+  })
+  if (!r.data.id) throw new Error("standalone draft returned no id")
+  return r.data.id
+}
+
 /** Subject + from for a thread, cheap metadata-only fetch (digest links). */
 export async function getThreadMeta(
   threadId: string

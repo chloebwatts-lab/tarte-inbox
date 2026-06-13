@@ -10,6 +10,7 @@ import {
   archiveThread,
   deleteThreadDrafts,
   createInThreadDraft,
+  createStandaloneDraft,
   sendInThreadReply,
   findOurSentReply,
   createForwardDraft,
@@ -172,6 +173,172 @@ function isAutomatedReceipt(from: string, subject: string): boolean {
   return false
 }
 
+// --- website contact-form submissions ---
+// Squarespace/Wix/Jotform/etc. relay form submissions FROM their own address
+// (e.g. form-submission@squarespace.info) with the real customer's email
+// buried in the body ("Email: jane@x.com"). Replying to latest.from would
+// reach the relay, never the customer — so we parse out the real person and
+// reply to THEM in a fresh email.
+
+interface FormSubmission {
+  name: string | null
+  email: string
+  subject: string
+  message: string
+  interestedIn: string | null
+}
+
+const FORM_RELAY_FROM = /squarespace\.info|@(?:wix|jotform|wufoo|typeform|formspree|hubspot)\.com|form-?submission/i
+
+function field(body: string, label: string): string | null {
+  const m = body.match(new RegExp(`^\\s*${label}\\s*:?\\s*(.+)$`, "im"))
+  return m ? m[1]!.trim() : null
+}
+
+export function parseFormSubmission(latest: ParsedMessage): FormSubmission | null {
+  const body = latest.bodyText
+  const looksLikeForm =
+    FORM_RELAY_FROM.test(latest.from) ||
+    /sent via form submission/i.test(body) ||
+    (/^\s*Name\s*:/im.test(body) &&
+      /^\s*Email\s*:/im.test(body) &&
+      /^\s*Message\s*:/im.test(body))
+  if (!looksLikeForm) return null
+
+  // Real customer email: prefer the "Email:" field, else first address in
+  // the body that isn't ours or the relay.
+  const emailField = field(body, "Email")
+  let email = emailField?.match(/[\w.+-]+@[\w.-]+\.\w+/)?.[0] ?? null
+  if (!email) {
+    const helloMail = config().HELLO_MAILBOX.toLowerCase()
+    const all = body.match(/[\w.+-]+@[\w.-]+\.\w+/g) ?? []
+    email =
+      all.find(
+        (a) =>
+          !a.toLowerCase().includes(helloMail) &&
+          !FORM_RELAY_FROM.test(a) &&
+          !/squarespace|wixpress|noreply/i.test(a)
+      ) ?? null
+  }
+  if (!email) return null
+
+  // The message body sometimes spans multiple lines until the next labelled
+  // field or the relay's footer links.
+  const msgMatch = body.match(
+    /^\s*Message\s*:?\s*([\s\S]*?)(?:\n\s*(?:Interested in|Phone|Create Invoice|Manage Submissions|Does this submission|Sent via)\b|$)/im
+  )
+  const message = (msgMatch?.[1] ?? field(body, "Message") ?? body).trim()
+
+  return {
+    name: field(body, "Name"),
+    email,
+    subject: field(body, "Subject") || latest.subject.replace(/^Form Submission[ -]*/i, "").trim() || "your enquiry",
+    message,
+    interestedIn: field(body, "Interested in"),
+  }
+}
+
+function firstNameFromFullName(name: string | null): string | undefined {
+  if (!name) return undefined
+  const first = name.trim().split(/\s+/)[0]
+  return first && /^[A-Za-z][A-Za-z'-]*$/.test(first) ? first : undefined
+}
+
+/**
+ * Handle a parsed website form submission: classify the real message, draft
+ * a reply, and create it as a fresh draft TO THE CUSTOMER (not the relay).
+ * Always flagged for human review — the recipient was rewritten, so a person
+ * sanity-checks it before sending. Never auto-sends.
+ */
+async function handleFormSubmission(
+  thread: ParsedThread,
+  latest: ParsedMessage,
+  form: FormSubmission
+): Promise<boolean> {
+  const result = await classify(form.subject, form.email, form.message)
+  await applyLabel(thread.threadId, CATEGORY_LABELS[result.category])
+
+  // Urgent / no-draft categories: flag, don't draft.
+  if (result.category === "urgent_escalation") {
+    await applyLabel(thread.threadId, URGENT_LABEL)
+    await applyLabel(thread.threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "urgent",
+      last_action: "flagged_urgent",
+      meta: { formEmail: form.email, formName: form.name },
+    })
+    return true
+  }
+  if (
+    result.category === "needs_human" ||
+    result.category === "accounts_invoices" ||
+    result.category === "marketing_cold_outreach" ||
+    result.category === "no_action"
+  ) {
+    await applyLabel(thread.threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: { formEmail: form.email, formName: form.name, formSubmission: true },
+    })
+    return true
+  }
+
+  const playbook = await getPlaybook(result.category)
+  const allergenBlock = await maybeAllergenBlock(form.subject + "\n" + form.message)
+  const extras: Array<{ role: "user" | "assistant"; content: string }> = [
+    {
+      role: "user",
+      content:
+        `This enquiry arrived through our WEBSITE CONTACT FORM. Reply to the customer (${form.name ?? form.email}) directly and naturally — do not mention forms, Squarespace, or how it reached us.` +
+        (form.interestedIn ? ` They selected interest: "${form.interestedIn}".` : ""),
+    },
+  ]
+  if (allergenBlock) extras.push({ role: "user", content: allergenBlock })
+
+  const d = await draft({
+    category: result.category,
+    playbook,
+    threadHistory: [
+      { from: `${form.name ?? "Customer"} <${form.email}>`, date: latest.date, text: form.message },
+    ],
+    customerName: firstNameFromFullName(form.name),
+    customExtras: extras,
+  })
+  if (!d.body) return await flagDraftFailure(thread, latest, result.category)
+
+  const draftId = await createStandaloneDraft(
+    form.email,
+    form.subject,
+    d.body,
+    config().HELLO_MAILBOX,
+    "Tarte Team"
+  )
+  await applyLabel(thread.threadId, ACTION_LABEL)
+  await upsertThread({
+    thread_id: thread.threadId,
+    last_message_id: latest.id,
+    state: "form_drafted",
+    last_action: "drafted",
+    meta: {
+      formSubmission: true,
+      formEmail: form.email,
+      formName: form.name,
+      category: result.category,
+      draftId,
+      draftBody: d.body,
+      draftedAt: new Date().toISOString(),
+      flags: d.flags,
+    },
+  })
+  console.log(`[pipeline] form submission -> standalone draft to ${form.email} (${result.category})`)
+  return true
+}
+
 export async function processThread(
   threadId: string,
   opts: { force?: boolean } = {}
@@ -234,6 +401,27 @@ export async function processThread(
       last_action: "skipped_outbound",
     })
     return false
+  }
+
+  // Website contact-form submission? The real customer is in the body, not
+  // the From header — handle specially so the reply reaches the person, not
+  // the form relay (Squarespace etc.).
+  const form = parseFormSubmission(latest)
+  if (form) {
+    return await handleFormSubmission(thread, latest, form)
+  }
+  // Looked like a form (relay sender) but we couldn't find a customer email
+  // — never reply to the relay; flag for a human.
+  if (FORM_RELAY_FROM.test(latest.from)) {
+    await applyLabel(threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: { formRelayUnparsed: true },
+    })
+    return true
   }
 
   // Strip quoted blocks + auto-mailer boilerplate from the latest body
