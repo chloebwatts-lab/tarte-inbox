@@ -1073,12 +1073,15 @@ async function handleFunctionEnquiry(
     "balance_invoiced",
     "paid",
   ])
-  if (booking && COMMITTED_STATES.has(booking.state)) {
+  // Treat a thread we've already invoiced as committed too — never re-propose
+  // slots to someone who's been booked and invoiced.
+  const alreadyInvoiced = await threadHasInvoice(thread.threadId)
+  if (alreadyInvoiced || (booking && COMMITTED_STATES.has(booking.state))) {
     const playbook = await getPlaybook(category)
     const allergenQ = await maybeAllergenBlock(
       latest.subject + "\n" + dequote(latest.bodyText)
     )
-    const slotLabel = booking.event_start
+    const slotLabel = booking?.event_start
       ? new Date(booking.event_start).toLocaleString("en-AU", {
           timeZone: "Australia/Brisbane",
           weekday: "long",
@@ -1099,7 +1102,7 @@ async function handleFunctionEnquiry(
           role: "user",
           content:
             `This customer already has a CONFIRMED function booking with us` +
-            (slotLabel ? ` (${slotLabel}, ${booking.pax ?? "?"} pax)` : "") +
+            (slotLabel ? ` (${slotLabel}, ${booking?.pax ?? "?"} pax)` : "") +
             `. They are following up (a question, a change to numbers/dietaries, or logistics). ` +
             `Do NOT propose new dates or re-pitch packages. Answer their message warmly and briefly. ` +
             `If they want to change guest numbers, the date, or anything affecting the booking or invoice, acknowledge it and note a teammate will confirm — add "needs_human" to flags so a person actions it.`,
