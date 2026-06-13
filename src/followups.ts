@@ -74,6 +74,17 @@ async function nudgeBooking(b: StaleBooking): Promise<boolean> {
   }
   if (!lastCustomer) return false
 
+  // Re-check state right before drafting: a confirmation reply could have
+  // progressed this booking (slot_selected/invoiced) between the SELECT and
+  // now — nudging a booked customer would be confusing.
+  const fresh = await db().query<{ state: string; nudged_at: Date | null }>(
+    `SELECT state, nudged_at FROM inbox_bookings WHERE id = $1`,
+    [b.id]
+  )
+  if (fresh.rows[0]?.state !== "slots_proposed" || fresh.rows[0]?.nudged_at) {
+    return false
+  }
+
   const category = CATEGORY_BY_VENUE[b.venue] ?? "events_beach_house_functions"
   const playbook = await getPlaybook(category)
   const slotsPast = b.proposed_slots.every(

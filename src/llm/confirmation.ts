@@ -89,10 +89,15 @@ function parse(text: string): ConfirmationResult {
         : "question"
     const conf =
       typeof obj.confidence === "number" ? obj.confidence : 0
-    // Force to "question" if low confidence on a "confirmed" claim — never
-    // create an invoice on a shaky signal.
+    // Force to "question" on a shaky signal: never create an invoice on a
+    // low-confidence "confirmed", and don't re-roll dates on a low-confidence
+    // "different_time" (an ambiguous "what about next month?" shouldn't
+    // trigger unexpected new slot proposals).
     const safeAction: ConfirmationAction =
-      action === "confirmed" && conf < 0.8 ? "question" : action
+      (action === "confirmed" && conf < 0.8) ||
+      (action === "different_time" && conf < 0.6)
+        ? "question"
+        : action
     return {
       action: safeAction,
       selected_slot_index:

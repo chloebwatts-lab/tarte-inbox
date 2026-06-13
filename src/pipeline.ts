@@ -162,8 +162,10 @@ const RECEIPT_SUBJECT_PATTERNS = [
 function isAutomatedReceipt(from: string, subject: string): boolean {
   const lowerFrom = from.toLowerCase()
   if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(lowerFrom))) return true
-  // Receipt subject + a transactional sender prefix (orders@, billing@, etc.)
-  const transactionalSender = /(?:^|<)(orders?|billing|accounts?|invoices?|sales|info|admin|support|service)@/i
+  // Receipt subject + a transactional sender prefix (orders@, billing@, etc.).
+  // Deliberately excludes info@/support@/service@ — those are commonly human
+  // and a real "Question about invoice #123" from one must not be archived.
+  const transactionalSender = /(?:^|<)(orders?|billing|accounts?|invoices?|sales|admin)@/i
   if (
     transactionalSender.test(lowerFrom) &&
     RECEIPT_SUBJECT_PATTERNS.some((p) => p.test(subject))
@@ -768,6 +770,20 @@ async function deliver(
   opts: { extraAttachments?: Attachment[] } = {}
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
+  // Last-line guard: never address a reply to a no-reply / relay sender that
+  // slipped past classification into a drafting category. Flag for a human
+  // instead of creating a draft that would bounce or hit a ticket queue.
+  if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(latest.from))) {
+    await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: { suppressedNoreplyReply: true, category },
+    })
+    return true
+  }
   const ctx = {
     threadId: thread.threadId,
     to: latest.from,
@@ -1243,7 +1259,7 @@ async function handleFunctionEnquiry(
         )
         .join("\n") +
       "\nCopy these dates, weekdays and times into the reply EXACTLY as written above — never recompute or reword a weekday."
-    : "We'll come back to you with available windows shortly."
+    : "(No open windows found for the dates given — see the drafting rule below.)"
 
   const dateBlock = extracted.preferred_date
     ? `Preferred date: ${extracted.preferred_date}`
@@ -1408,9 +1424,12 @@ function todayBrisbaneStr(): string {
 function liveDaytimeSlots(
   slots: Array<{ start: string; end: string }>
 ): Array<{ start: string; end: string }> {
-  const today = todayBrisbaneStr()
+  const now = Date.now()
   return slots.filter((s) => {
-    if (s.start.slice(0, 10) <= today) return false
+    // Past check on the absolute instant — NOT a UTC date-string slice, which
+    // is off by a day for morning Brisbane slots (their UTC date is the day
+    // before, so a still-future 9:30am slot was wrongly dropped).
+    if (new Date(s.start).getTime() <= now) return false
     const hour = Number(
       new Intl.DateTimeFormat("en-GB", {
         timeZone: "Australia/Brisbane",
