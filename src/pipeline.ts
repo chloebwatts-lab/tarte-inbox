@@ -1074,12 +1074,15 @@ async function handleFunctionEnquiry(
         event_start: new Date(chosen.start),
         event_end: new Date(chosen.end),
       })
-      // Auto-progress: create Xero deposit invoice + calendar event
+      // Xero invoice creation is gated: when ENABLE_AUTO_INVOICE is false
+      // (default), confirming a slot does NOT raise an invoice in Xero —
+      // a human raises + sends the deposit invoice from Xero. Prevents
+      // auto-created invoices landing in the accounts before approval.
       let invoiceUrl: string | undefined
       let invoicePdf: Attachment | undefined
       try {
         const updated = await getBookingByThread(thread.threadId)
-        if (updated) {
+        if (config().ENABLE_AUTO_INVOICE && updated) {
           await progressBookingToInvoice(updated.id)
           const after = await getBookingByThread(thread.threadId)
           if (after?.xero_deposit_invoice_id) {

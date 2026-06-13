@@ -25,6 +25,14 @@ const schema = z.object({
     .string()
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
+  // When false (default), a customer confirming a slot NEVER auto-creates a
+  // Xero invoice — the agent drafts the confirmation and flags a human to
+  // raise the deposit invoice in Xero. Prevents auto-created invoices hitting
+  // the accounts before anyone approves them.
+  ENABLE_AUTO_INVOICE: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
 })
 
 export type Config = z.infer<typeof schema>
