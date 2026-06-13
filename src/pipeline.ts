@@ -40,6 +40,12 @@ import {
   generateDepositInvoice,
 } from "./invoice/generate.js"
 import {
+  extractInvoiceDetails,
+  invoiceableNow,
+  buildInvoiceFromExtraction,
+} from "./invoice/from-thread.js"
+import { db } from "./db/pool.js"
+import {
   classify,
   CATEGORY_LABELS,
   type Category,
@@ -932,6 +938,97 @@ async function flagDraftFailure(
   return true
 }
 
+// --- auto-invoice from a finalised thread ---
+
+// Cheap pre-gate so we only spend an LLM extraction on threads that actually
+// look like they've reached the deposit/invoice stage.
+const INVOICE_STAGE_RE =
+  /\binvoice|\bdeposit\b|secure (?:the|your|my|this)|lock (?:it|in|this|that)|save[- ]?the[- ]?date|final numbers|put a hold|hold (?:on|the|this|it)|confirm[^.]{0,25}(?:date|booking|numbers)/i
+
+function looksLikeInvoiceStage(text: string): boolean {
+  return INVOICE_STAGE_RE.test(text)
+}
+
+async function threadHasInvoice(threadId: string): Promise<boolean> {
+  const { rows } = await db().query(
+    `SELECT 1 FROM inbox_invoices WHERE thread_id = $1 AND invoice_number <> 'PENDING' LIMIT 1`,
+    [threadId]
+  )
+  return rows.length > 0
+}
+
+/**
+ * When a function thread has reached the invoicing stage with all final
+ * details agreed, generate the Tarte deposit invoice from the thread and
+ * draft a reply with it attached. Always flagged for human review; never
+ * auto-sends. Returns false if not ready (caller continues normal flow).
+ */
+async function maybeAutoInvoice(
+  thread: ParsedThread,
+  latest: ParsedMessage,
+  venue: Venue,
+  category: Category,
+  fullText: string
+): Promise<boolean> {
+  if (!invoiceConfigReady()) return false
+  if (!looksLikeInvoiceStage(fullText)) return false
+  if (await threadHasInvoice(thread.threadId)) return false
+  const today = todayBrisbaneStr()
+  const weekday = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+  }).format(new Date())
+  const x = await extractInvoiceDetails(thread, today, weekday)
+  if (!invoiceableNow(x)) return false
+
+  const booking = await getBookingByThread(thread.threadId)
+  const built = await buildInvoiceFromExtraction(x, {
+    bookingId: booking?.id ?? null,
+    threadId: thread.threadId,
+    todayBrisbane: today,
+  })
+  const total = x.add_ons.reduce(
+    (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
+    (x.per_person_price ?? 0) * (x.guests ?? 0)
+  )
+  const deposit = Math.round((total * (x.deposit_pct ?? 50)) / 100 * 100) / 100
+  const playbook = await getPlaybook(category)
+  const dateLabel = x.event_date
+    ? new Date(`${x.event_date}T00:00:00+10:00`).toLocaleDateString("en-AU", {
+        timeZone: "Australia/Brisbane",
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      })
+    : "the agreed date"
+  const d = await draft({
+    category,
+    playbook,
+    threadHistory: thread.messages.map(toHistoryItem),
+    customerName: x.customer_name ?? firstName(latest.from),
+    customExtras: [
+      {
+        role: "user",
+        content:
+          `The booking is now CONFIRMED and the deposit invoice (${built.invoiceNumber}) is ATTACHED to this email as a PDF.\n` +
+          `Date: ${dateLabel}; Time: ${x.time_label ?? "as agreed"}; Guests: ${x.guests ?? "?"}; Package: ${[x.package_name, x.venue_space].filter(Boolean).join(" in ")}.\n` +
+          `Deposit to pay now: ${x.deposit_pct ?? 50}% = $${deposit.toFixed(2)}.\n` +
+          `Drafting rule: warm, short reply. Thank them for confirming the details, say their deposit invoice is attached and paying the deposit secures the date, and that final numbers/dietaries can be confirmed closer to the day. Don't re-list every line. Keep it to a few sentences.`,
+      },
+    ],
+  })
+  if (!d.body) return await flagDraftFailure(thread, latest, category)
+  // Invoices always get human eyes before sending.
+  if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+  await deliver(thread, latest, d, category, playbook, {
+    extraAttachments: [
+      { filename: `${built.invoiceNumber}.pdf`, contentType: "application/pdf", data: built.pdf },
+    ],
+  })
+  console.log(`[invoice] auto-built ${built.invoiceNumber} for thread ${thread.threadId} (${x.guests}pax, $${total})`)
+  return true
+}
+
 // --- function enquiry pipeline ---
 
 async function handleFunctionEnquiry(
@@ -942,6 +1039,22 @@ async function handleFunctionEnquiry(
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   const fullText = thread.messages.map((m) => m.bodyText).join("\n\n---\n\n")
+
+  // --- Finalised in-thread? Auto-build the deposit invoice from the FINAL
+  // agreed details (date/time/numbers/package) and draft a reply with it
+  // attached. Runs whether the booking was agreed via the agent or by staff
+  // in plain email. One invoice per thread; always human-reviewed.
+  try {
+    if (await maybeAutoInvoice(thread, latest, venue, category, fullText)) {
+      return true
+    }
+  } catch (e) {
+    console.error(
+      "[invoice] auto-build error:",
+      e instanceof Error ? e.message : e
+    )
+  }
+
   const extracted = await extractBooking(fullText)
   const customerEmail = extractEmail(latest.from)
   const customerName =
