@@ -272,6 +272,40 @@ async function handleFormSubmission(
   const result = await classify(form.subject, form.email, form.message)
   await applyLabel(thread.threadId, CATEGORY_LABELS[result.category])
 
+  // Forward-only categories (e.g. job applications → work@): hand the
+  // parsed enquiry to the right team as a fresh email, including the real
+  // applicant's contact details (which the relay buried in the body).
+  const fwdPlaybook = await getPlaybook(result.category)
+  if (fwdPlaybook?.forward_to) {
+    const fwdBody =
+      `Website form submission (forwarded by Tarte Inbox):\n\n` +
+      `Name: ${form.name ?? "?"}\n` +
+      `Email: ${form.email}\n` +
+      (form.interestedIn ? `Interested in: ${form.interestedIn}\n` : "") +
+      `Subject: ${form.subject}\n\n${form.message}`
+    const draftId = await createStandaloneDraft(
+      fwdPlaybook.forward_to,
+      `Fwd: ${form.subject}`,
+      fwdBody,
+      config().HELLO_MAILBOX,
+      "Tarte Inbox"
+    )
+    await applyLabel(thread.threadId, ACTION_LABEL)
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "form_forward_drafted",
+      last_action: "drafted_forward",
+      meta: {
+        formSubmission: true,
+        formEmail: form.email,
+        forwardTo: fwdPlaybook.forward_to,
+        draftId,
+      },
+    })
+    return true
+  }
+
   // Urgent / no-draft categories: flag, don't draft.
   if (result.category === "urgent_escalation") {
     await applyLabel(thread.threadId, URGENT_LABEL)
