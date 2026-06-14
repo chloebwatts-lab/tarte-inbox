@@ -1424,7 +1424,9 @@ async function handleFunctionEnquiry(
         )
         .join("\n") +
       "\nCopy these dates, weekdays and times into the reply EXACTLY as written above — never recompute or reword a weekday."
-    : "(No open windows found for the dates given — see the drafting rule below.)"
+    : venue === "tea_garden"
+      ? "(Calendar didn't auto-suggest a window, but the Tea Garden accommodates group bookings — see the drafting rule below; do NOT decline.)"
+      : "(No open windows found for the dates given — see the drafting rule below.)"
 
   const dateBlock = extracted.preferred_date
     ? `Preferred date: ${extracted.preferred_date}`
@@ -1485,12 +1487,21 @@ async function handleFunctionEnquiry(
     )
   }
 
+  // No-slots handling is venue-aware. Tea Garden is a shared cafe/garden that
+  // seats many groups at once — we ACCOMMODATE group bookings, never decline
+  // for "availability". Beach House (Hideout) is exclusive, so a clash there
+  // does mean we ask for another date.
+  const noSlotsRule =
+    venue === "tea_garden"
+      ? "DO NOT tell them we have no availability — we can host this group at the Tea Garden. Warmly confirm we'd love to have them on the date and time they asked for. If the group is over 12, mention our set brunch menu at $55 per person. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
+      : "We don't have the Hideout free on the date(s) they gave. Apologise briefly and ask for an alternative date window, don't make them spell out the same dates again."
+
   const draftingRules =
     (proposed.length
       ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
         wideRangeNote +
         teaGardenCaveat
-      : "No slots are available in the date(s) they gave according to our calendar. Apologise briefly and ask them for an alternative date window — don't make them spell out the same dates again.") +
+      : noSlotsRule) +
     (guardNotes.length ? "\nGuards:\n- " + guardNotes.join("\n- ") : "")
 
   const d = await draft({
@@ -1569,10 +1580,11 @@ async function proposeSlotsInRange(
   return out
 }
 
-// Daytime venue: nothing starts before 08:00 or after 14:00 (Chris
-// 2026-06-12: "we do not offer nights yet" — that includes functions).
-// Evening requests are ignored here; the drafter explains daytime-only.
-const EARLIEST_START_HOUR = 8
+// Daytime venue: nothing starts after mid-afternoon (Chris 2026-06-12: "we do
+// not offer nights yet"). Earliest 07:00 covers the Tea Garden's 7:30am
+// weekend opening for group breakfasts. Evening requests are ignored here;
+// the drafter explains daytime-only.
+const EARLIEST_START_HOUR = 7
 const LATEST_START_HOUR = 14
 
 function todayBrisbaneStr(): string {
