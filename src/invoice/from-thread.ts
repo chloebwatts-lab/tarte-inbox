@@ -12,6 +12,8 @@ import {
 } from "./generate.js"
 
 export interface InvoiceExtraction {
+  booking_type: "private_hire" | "table_booking" | "unknown"
+  customer_confirmed: boolean
   ready_to_invoice: boolean
   customer_name: string | null
   customer_email: string | null
@@ -28,10 +30,14 @@ export interface InvoiceExtraction {
   missing: string[] // what's still needed before invoicing, if any
 }
 
-const SYSTEM = `You read an email thread for Tarte (a Queensland hospitality venue) about a FUNCTION/EVENT booking (high tea, baby shower, hens, private lunch in The Hideout or Tea Garden). Extract the FINAL agreed booking details so we can raise a deposit invoice.
+const SYSTEM = `You read an email thread for Tarte (a Queensland hospitality venue). A deposit invoice is raised ONLY for EXCLUSIVE PRIVATE HIRE — a whole-venue hire or a private styled function (baby shower / hens / private high tea or lunch in The Hideout or a private Tea Garden section). A plain group TABLE booking (a group just wanting a table for breakfast / brunch / lunch, e.g. the set brunch package) takes NO deposit and is NEVER invoiced.
+
+Extract the FINAL agreed booking details and decide whether we should invoice now.
 
 Output STRICT JSON only:
 {
+  "booking_type": "private_hire" | "table_booking" | "unknown",
+  "customer_confirmed": <true|false>,
   "ready_to_invoice": <true|false>,
   "customer_name": "<string|null>",
   "customer_email": "<email|null>",
@@ -49,12 +55,12 @@ Output STRICT JSON only:
 }
 
 CRITICAL rules:
-- Use the MOST RECENT agreed value when something changes. If the customer first said 32 guests then later "I would look to have 30", the answer is 30. If a date was held then changed, use the latest confirmed/held one.
-- ready_to_invoice = true ONLY when ALL of these are settled in the thread: a specific event DATE is confirmed or held by Tarte, the PACKAGE and PER-PERSON PRICE are known, the GUEST COUNT is given, and the conversation has moved to securing/deposit/invoice. Otherwise false, and list what's missing.
-- Resolve relative/partial dates ("9th August", "Sunday the 9th") to YYYY-MM-DD using the TODAY line provided. Dates should be in the future.
-- deposit_pct defaults to 50 unless the thread says otherwise (a flat save-the-date amount like $500 → set per_person_price null, put the $500 as an add_on line "Save-the-date deposit" and deposit_pct 100).
-- Tea Garden / Beach House high tea is usually $89pp in The Hideout; don't invent a price if it's not in the thread — leave per_person_price null and mark missing.
-- Guests must be the count to INVOICE for now (final-ish); note that numbers can be adjusted before final payment.
+- booking_type: "private_hire" only when the customer clearly wants exclusive/private use or a styled private function (Hideout, private Tea Garden section, whole-venue). A group asking for a table / breakfast / brunch / lunch booking, or asking to "confirm availability", is "table_booking". If unclear, "unknown".
+- customer_confirmed = true ONLY when the CUSTOMER has explicitly said they want to go ahead / lock it in / pay the deposit / "please invoice me". Merely asking for availability, prices, packages, or options is NOT confirmation.
+- ready_to_invoice = true ONLY when ALL hold: booking_type is "private_hire"; customer_confirmed is true; a specific DATE is confirmed/held; the PACKAGE and a real PER-PERSON PRICE that was actually quoted in the thread are known; and the GUEST COUNT is given. In EVERY other case ready_to_invoice = false (list what's missing). When in any doubt, false.
+- NEVER invent a price or a deposit. If the per-person price was not actually stated in the thread, leave per_person_price null and ready_to_invoice false. Do NOT fabricate a "$500 save-the-date" line — only include a deposit/amount the thread actually agreed.
+- Use the MOST RECENT agreed value when something changes (e.g. 32 guests later revised to 30 → 30).
+- Resolve relative/partial dates ("9th August") to YYYY-MM-DD using the TODAY line. Dates must be in the future.
 - customer_email: the customer's real address (not hello@tarte.com.au).`
 
 export async function extractInvoiceDetails(
@@ -83,6 +89,8 @@ export async function extractInvoiceDetails(
 
 function empty(): InvoiceExtraction {
   return {
+    booking_type: "unknown",
+    customer_confirmed: false,
     ready_to_invoice: false,
     customer_name: null,
     customer_email: null,
@@ -106,6 +114,11 @@ function parse(text: string): InvoiceExtraction {
   try {
     const o = JSON.parse(m[0]) as Partial<InvoiceExtraction>
     return {
+      booking_type:
+        o.booking_type === "private_hire" || o.booking_type === "table_booking"
+          ? o.booking_type
+          : "unknown",
+      customer_confirmed: o.customer_confirmed === true,
       ready_to_invoice: o.ready_to_invoice === true,
       customer_name: typeof o.customer_name === "string" ? o.customer_name : null,
       customer_email: typeof o.customer_email === "string" ? o.customer_email : null,
@@ -144,13 +157,18 @@ function fmtDue(eventDate: string, daysBefore: number): string {
   })
 }
 
-/** True only when there's enough to produce a correct invoice. */
+/** True only when there's genuinely enough to invoice — and ONLY for a
+ *  confirmed EXCLUSIVE PRIVATE HIRE. Table/group dining bookings never
+ *  invoice (no deposit). Fail-safe: any doubt → false. */
 export function invoiceableNow(x: InvoiceExtraction): boolean {
   if (!x.ready_to_invoice) return false
-  const hasMoney =
-    (x.per_person_price != null && x.guests != null && x.guests > 0) ||
-    x.add_ons.length > 0
-  return Boolean(x.customer_email && x.event_date && hasMoney && x.confidence >= 0.7)
+  if (x.booking_type !== "private_hire") return false
+  if (!x.customer_confirmed) return false
+  // A real, thread-quoted per-person price + guest count (no invented save-
+  // the-date amounts) and a confirmed future date.
+  const hasRealPricing =
+    x.per_person_price != null && x.per_person_price > 0 && x.guests != null && x.guests > 0
+  return Boolean(x.customer_email && x.event_date && hasRealPricing && x.confidence >= 0.8)
 }
 
 export interface ThreadInvoiceResult extends GeneratedInvoice {
