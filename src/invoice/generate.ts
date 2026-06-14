@@ -112,14 +112,17 @@ export interface GeneratedInvoice {
 async function reserveInvoiceNumber(input: InvoiceInput, amount: number): Promise<string> {
   const { prefix } = invoiceConfig()
   const year = input.todayBrisbane.slice(0, 4)
-  if (input.bookingId != null) {
-    const existing = await db().query<{ invoice_number: string }>(
-      `SELECT invoice_number FROM inbox_invoices
-        WHERE booking_id = $1 AND invoice_number <> 'PENDING' ORDER BY id LIMIT 1`,
-      [input.bookingId]
-    )
-    if (existing.rows[0]) return existing.rows[0].invoice_number
-  }
+  // Idempotent by booking OR thread — reuse an existing number rather than
+  // minting a duplicate when a draft is regenerated.
+  const existing = await db().query<{ invoice_number: string }>(
+    `SELECT invoice_number FROM inbox_invoices
+      WHERE invoice_number <> 'PENDING'
+        AND ( ($1::bigint IS NOT NULL AND booking_id = $1)
+              OR thread_id = $2 )
+      ORDER BY id LIMIT 1`,
+    [input.bookingId, input.threadId]
+  )
+  if (existing.rows[0]) return existing.rows[0].invoice_number
   const desc = input.event?.packageName ?? input.lineItems[0]?.description ?? "Function"
   const { rows } = await db().query<{ id: number }>(
     `INSERT INTO inbox_invoices
