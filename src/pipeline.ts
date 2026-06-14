@@ -1493,7 +1493,7 @@ async function handleFunctionEnquiry(
   // does mean we ask for another date.
   const noSlotsRule =
     venue === "tea_garden"
-      ? "DO NOT tell them we have no availability — we can host this group at the Tea Garden. Warmly confirm we'd love to have them on the date and time they asked for. If the group is over 12, mention our set brunch menu at $55 per person. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
+      ? "DO NOT tell them we have no availability — we can host this group. Warmly confirm we'd love to have them on the date and time they asked for. If it's a group dining/table booking over 12 on a weekend, point them to our Set Brunch Package (from $40pp, details in the attached functions pack) — and DON'T mention a deposit for a table booking. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
       : "We don't have the Hideout free on the date(s) they gave. Apologise briefly and ask for an alternative date window, don't make them spell out the same dates again."
 
   const draftingRules =
@@ -1525,7 +1525,7 @@ async function handleFunctionEnquiry(
           `${dateBlock}\n` +
           `Slots:\n${slotsBlock}\n` +
           nbiContext +
-          `Deposit to hold the date: $${FUNCTION_DEPOSIT_AUD}\n` +
+          `Deposit rule: a $${FUNCTION_DEPOSIT_AUD} deposit applies ONLY to EXCLUSIVE PRIVATE HIRE (whole-venue hire, or a private styled function like a baby shower / hens in the Hideout). A group that just wants a TABLE for breakfast / brunch / lunch (even 15+ people) is a normal dining booking — NO deposit, do not mention one; just confirm the table, the set brunch menu for 12+, and take their final numbers and dietaries. Judge which this is from what the customer actually asked for; when unsure, treat it as a table booking and don't raise a deposit.\n` +
           `\nDrafting rule: ${draftingRules}\n`,
       },
     ],
