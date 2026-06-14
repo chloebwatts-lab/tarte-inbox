@@ -511,8 +511,36 @@ export async function processThread(
   })
 
   // Handed off to a human via forward (e.g. shawna@tarte.com.au)?
-  // Label only, don't draft. Shawna will reply directly.
+  // Label only, don't draft — EXCEPT for invoicing: forwarding a "please
+  // invoice" to Shawna is exactly the cue to auto-build the deposit invoice,
+  // so the agent does that (as a draft for review) instead of backing off.
   if (threadHandedOff(thread)) {
+    const venue = VENUE_BY_CATEGORY[result.category]
+    if (
+      venue &&
+      invoiceConfigReady() &&
+      looksLikeInvoiceStage(renderFullThread(thread.messages)) &&
+      !(await threadHasInvoice(threadId))
+    ) {
+      try {
+        if (
+          await maybeAutoInvoice(
+            thread,
+            latest,
+            venue,
+            result.category,
+            renderFullThread(thread.messages)
+          )
+        ) {
+          return true
+        }
+      } catch (e) {
+        console.error(
+          "[invoice] handed-off auto-invoice failed:",
+          e instanceof Error ? e.message : e
+        )
+      }
+    }
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
