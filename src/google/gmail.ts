@@ -228,6 +228,7 @@ interface ReplyContext {
   threadId: string
   to: string
   cc?: string[]
+  bcc?: string[]
   subject: string
   inReplyTo: string // Message-ID header of the message being replied to
   references: string // existing References header (we append inReplyTo)
@@ -273,6 +274,7 @@ function buildRfc822(
     `From: ${fromHeader}`,
     `To: ${ctx.to}`,
     ctx.cc?.length ? `Cc: ${ctx.cc.join(", ")}` : null,
+    ctx.bcc?.length ? `Bcc: ${ctx.bcc.join(", ")}` : null,
     `Subject: ${subj}`,
     `In-Reply-To: ${ctx.inReplyTo}`,
     `References: ${refs}`,
@@ -444,20 +446,57 @@ export async function createStandaloneDraft(
   subject: string,
   bodyText: string,
   fromEmail: string,
-  fromName?: string
+  fromName?: string,
+  attachments: Attachment[] = [],
+  bcc?: string[]
 ): Promise<string> {
   const subj = subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`
   const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
-  const rfc822 = [
+  const headers = [
     `From: ${fromHeader}`,
     `To: ${to}`,
+    bcc?.length ? `Bcc: ${bcc.join(", ")}` : null,
     `Subject: ${subj}`,
     `MIME-Version: 1.0`,
-    `Content-Type: text/plain; charset=UTF-8`,
-    `Content-Transfer-Encoding: 7bit`,
-    ``,
-    bodyText,
-  ].join("\r\n")
+  ].filter(Boolean) as string[]
+
+  let rfc822: string
+  if (!attachments.length) {
+    rfc822 = [
+      ...headers,
+      `Content-Type: text/plain; charset=UTF-8`,
+      `Content-Transfer-Encoding: 7bit`,
+      ``,
+      bodyText,
+    ].join("\r\n")
+  } else {
+    const boundary = `b_${Math.random().toString(36).slice(2)}${Date.now()}`
+    const parts: string[] = [
+      `--${boundary}`,
+      `Content-Type: text/plain; charset=UTF-8`,
+      `Content-Transfer-Encoding: 7bit`,
+      ``,
+      bodyText,
+    ]
+    for (const a of attachments) {
+      const wrapped = a.data.toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? ""
+      parts.push(
+        `--${boundary}`,
+        `Content-Type: ${a.contentType}; name="${a.filename}"`,
+        `Content-Disposition: attachment; filename="${a.filename}"`,
+        `Content-Transfer-Encoding: base64`,
+        ``,
+        wrapped
+      )
+    }
+    parts.push(`--${boundary}--`)
+    rfc822 = [
+      ...headers,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      ``,
+      ...parts,
+    ].join("\r\n")
+  }
   const g = await gmail()
   const r = await g.users.drafts.create({
     userId: "me",

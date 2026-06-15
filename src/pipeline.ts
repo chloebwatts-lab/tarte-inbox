@@ -78,6 +78,10 @@ const VENUE_BY_CATEGORY: Partial<Record<Category, Venue>> = {
 const MAX_SLOTS_PROPOSED = 3
 const SLOT_DURATION_DEFAULT_HOURS = 3
 const FUNCTION_DEPOSIT_AUD = 500
+// Deposit invoices BCC accounts + Shawna when sent (Shawna 2026-06-15).
+// NOTE: confirm accounts@ address — Chris wrote "accounts@tarte.com"; using
+// the .com.au business domain. Update if the .com address is correct.
+const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au"]
 const BALANCE_DAYS_BEFORE_EVENT = 14
 
 // Triage labels — the staff work surface. The deal: anything needing a human
@@ -284,35 +288,22 @@ async function handleFormSubmission(
   const result = await classify(form.subject, form.email, form.message)
   await applyLabel(thread.threadId, CATEGORY_LABELS[result.category])
 
-  // Forward-only categories (e.g. job applications → work@): hand the
-  // parsed enquiry to the right team as a fresh email, including the real
-  // applicant's contact details (which the relay buried in the body).
+  // Forward-only categories (e.g. job applications → work@): while auto-send
+  // is off, DON'T create a forward draft (they pile up disconnected and never
+  // send). Just label so staff see it in the inbox + digest.
   const fwdPlaybook = await getPlaybook(result.category)
   if (fwdPlaybook?.forward_to) {
-    const fwdBody =
-      `Website form submission (forwarded by Tarte Inbox):\n\n` +
-      `Name: ${form.name ?? "?"}\n` +
-      `Email: ${form.email}\n` +
-      (form.interestedIn ? `Interested in: ${form.interestedIn}\n` : "") +
-      `Subject: ${form.subject}\n\n${form.message}`
-    const draftId = await createStandaloneDraft(
-      fwdPlaybook.forward_to,
-      `Fwd: ${form.subject}`,
-      fwdBody,
-      config().HELLO_MAILBOX,
-      "Tarte Inbox"
-    )
     await applyLabel(thread.threadId, ACTION_LABEL)
     await upsertThread({
       thread_id: thread.threadId,
       last_message_id: latest.id,
-      state: "form_forward_drafted",
-      last_action: "drafted_forward",
+      state: "classified",
+      last_action: "labeled",
       meta: {
         formSubmission: true,
         formEmail: form.email,
         forwardTo: fwdPlaybook.forward_to,
-        draftId,
+        forwardSuppressed: true,
       },
     })
     return true
@@ -376,12 +367,19 @@ async function handleFormSubmission(
   })
   if (!d.body) return await flagDraftFailure(thread, latest, result.category)
 
+  // ALWAYS attach the functions pack on a function/event reply, even via the
+  // website-form path (Shawna 2026-06-15) — customers should see the options.
+  const formAttachments =
+    playbook?.default_attachment_paths?.length
+      ? await loadAttachments(playbook.default_attachment_paths)
+      : []
   const draftId = await createStandaloneDraft(
     form.email,
     form.subject,
     d.body,
     config().HELLO_MAILBOX,
-    "Tarte Team"
+    "Tarte Team",
+    formAttachments
   )
   await applyLabel(thread.threadId, ACTION_LABEL)
   await upsertThread({
@@ -785,23 +783,17 @@ async function forwardThread(
     })
     return true
   }
-  const draftId = await createForwardDraft(
-    latest,
-    forwardTo,
-    helloMail,
-    "Tarte Inbox"
-  )
+  // Auto-send OFF: do NOT create a forward draft. Unsent forward drafts just
+  // pile up disconnected from the original thread (Shawna 2026-06-15) and the
+  // receiving team never gets them anyway. Just label the thread so staff see
+  // it; once auto-send is enabled, forwards actually send to the team.
   await applyLabel(thread.threadId, ACTION_LABEL)
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
-    state: "forward_drafted",
-    last_action: "drafted_forward",
-    meta: {
-      forwardTo,
-      forwardDraftId: draftId,
-      category,
-    },
+    state: "classified",
+    last_action: "labeled",
+    meta: { forwardTo, category, forwardSuppressed: true },
   })
   return true
 }
@@ -812,7 +804,7 @@ async function deliver(
   d: DraftResult,
   category: Category,
   playbook: Awaited<ReturnType<typeof getPlaybook>>,
-  opts: { extraAttachments?: Attachment[] } = {}
+  opts: { extraAttachments?: Attachment[]; bcc?: string[] } = {}
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   // Last-line guard: never address a reply to a no-reply / relay sender that
@@ -832,6 +824,7 @@ async function deliver(
   const ctx = {
     threadId: thread.threadId,
     to: latest.from,
+    bcc: opts.bcc,
     subject: latest.subject,
     inReplyTo: latest.messageIdHeader ?? "",
     references: latest.references ?? latest.messageIdHeader ?? "",
@@ -1056,9 +1049,16 @@ async function maybeAutoInvoice(
   if (!d.body) return await flagDraftFailure(thread, latest, category)
   // Invoices always get human eyes before sending.
   if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+  const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   await deliver(thread, latest, d, category, playbook, {
+    // BCC accounts + Shawna so the sent invoice copies them in (Chris/Shawna).
+    bcc: INVOICE_BCC,
     extraAttachments: [
-      { filename: `${built.invoiceNumber}.pdf`, contentType: "application/pdf", data: built.pdf },
+      {
+        filename: `${built.invoiceNumber} - ${safeName}.pdf`,
+        contentType: "application/pdf",
+        data: built.pdf,
+      },
     ],
   })
   console.log(`[invoice] auto-built ${built.invoiceNumber} for thread ${thread.threadId} (${x.guests}pax, $${total})`)
@@ -1253,12 +1253,13 @@ async function handleFunctionEnquiry(
       })
 
       // Block the slot on the venue calendar so it can't be double-booked
-      // (proposeSlots reads this calendar via isSlotFree). Best-effort.
+      // (proposeSlots reads this calendar via isSlotFree). It's a TENTATIVE
+      // ENQUIRY hold — NOT a confirmed booking — until the deposit is paid.
       try {
         if (!booking.calendar_event_id) {
           const calId = await createEvent(venue, {
-            summary: `Function — ${customerName ?? "?"} (${booking.pax ?? "?"} pax) — DEPOSIT PENDING`,
-            description: `Auto-held from inbox booking ${booking.id}. Confirm + invoice before treating as locked.`,
+            summary: `ENQUIRY (tentative hold) — ${customerName ?? "?"} (${booking.pax ?? "?"} pax)`,
+            description: `Tentative hold from inbox booking ${booking.id}. NOT confirmed — awaiting customer go-ahead + deposit. Don't treat as locked.`,
             start: new Date(chosen.start),
             end: new Date(chosen.end),
             attendees: customerEmail ? [customerEmail] : undefined,
@@ -1467,9 +1468,14 @@ async function handleFunctionEnquiry(
 
   // Safety guards the drafter must respect.
   const guardNotes: string[] = []
-  if (extracted.pax && extracted.pax > 40) {
+  if (extracted.pax && extracted.pax > 30) {
     guardNotes.push(
-      `The group size (${extracted.pax}) is larger than our biggest configuration (around 40 standing in the Hideout). Do NOT commit to hosting them — say we'd love to explore options for a group this size and the team will come back to them, and add "needs_human" to flags.`
+      `Large group (${extracted.pax}). Don't make it sound hard — we CAN host big groups. Recommend TEA GARDEN WHOLE-VENUE HIRE with a package (High Tea + Beer & Prosecco $55pp, or + Canapés + Cocktails $90pp) and point them to the attached functions pack for the options. Add "needs_human" so the team confirms details.`
+    )
+  }
+  if (!extracted.preferred_date && !extracted.date_range_start && /\b(\d{1,2})(st|nd|rd|th)?\b/.test(latest.subject + " " + latest.bodyText) && !/20\d\d/.test(latest.bodyText)) {
+    guardNotes.push(
+      `The customer gave a date with NO YEAR. Ask which year they mean before quoting availability — don't assume.`
     )
   }
   const soonCutoff = addDaysStr(todayBrisbaneStr(), 3)
@@ -1712,8 +1718,8 @@ export async function progressBookingToInvoice(bookingId: number): Promise<void>
     ],
   })
   const calendarEventId = await createEvent(b.venue, {
-    summary: `Function — ${b.customer_name} (${b.pax ?? "?"} pax) — DEPOSIT PENDING`,
-    description: `Auto-created from inbox booking ${b.id}. Xero deposit invoice ${depositId}.`,
+    summary: `DEPOSIT INVOICED — ${b.customer_name} (${b.pax ?? "?"} pax)`,
+    description: `From inbox booking ${b.id}. Deposit invoice ${depositId} raised — confirmed once deposit is paid.`,
     start: new Date(b.event_start),
     end: new Date(b.event_end),
     attendees: [b.customer_email],
