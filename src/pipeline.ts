@@ -78,9 +78,8 @@ const VENUE_BY_CATEGORY: Partial<Record<Category, Venue>> = {
 const MAX_SLOTS_PROPOSED = 3
 const SLOT_DURATION_DEFAULT_HOURS = 3
 const FUNCTION_DEPOSIT_AUD = 500
-// Deposit invoices BCC accounts + Shawna when sent (Shawna 2026-06-15).
-// NOTE: confirm accounts@ address — Chris wrote "accounts@tarte.com"; using
-// the .com.au business domain. Update if the .com address is correct.
+// Deposit invoices BCC accounts + Shawna when sent (Shawna 2026-06-15;
+// accounts@tarte.com.au confirmed by Chris 2026-06-15).
 const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au"]
 const BALANCE_DAYS_BEFORE_EVENT = 14
 
