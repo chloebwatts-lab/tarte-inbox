@@ -142,9 +142,14 @@ export async function syncCombinedCalendar(): Promise<{
   let removed = 0
   for (const b of rows) {
     const id = nbiEventId(b.booking_ref)
-    if (b.status === "Cancelled") {
+    // Only EVENTS belong on this calendar — high teas and functions. Regular
+    // restaurant/cafe covers (the bulk of NBI) are noise here and made the
+    // calendar a "jumpscare" (Chris 2026-06-15). Delete any that were synced
+    // before, and never add them.
+    const isEvent = /high tea|function|hideout|private/i.test(b.service)
+    if (b.status === "Cancelled" || !isEvent) {
       await deleteEvent(c, calendarId, id)
-      removed++
+      if (b.status === "Cancelled") removed++
       continue
     }
     const tbc = b.status === "Unconfirmed"

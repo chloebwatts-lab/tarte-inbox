@@ -157,6 +157,16 @@ function fmtDue(eventDate: string, daysBefore: number): string {
   })
 }
 
+/** Relaxed gate for a HUMAN-REQUESTED invoice (staff applied the Make-Invoice
+ *  label) — the human has decided to invoice, so we skip the private-hire /
+ *  confirmation gates; we only need enough to produce a CORRECT invoice. */
+export function manuallyInvoiceable(x: InvoiceExtraction): boolean {
+  const hasMoney =
+    (x.per_person_price != null && x.per_person_price > 0 && x.guests != null && x.guests > 0) ||
+    x.add_ons.some((a) => a.unit_price > 0)
+  return Boolean(x.customer_email && x.event_date && hasMoney)
+}
+
 /** True only when there's genuinely enough to invoice — and ONLY for a
  *  confirmed EXCLUSIVE PRIVATE HIRE. Table/group dining bookings never
  *  invoice (no deposit). Fail-safe: any doubt → false. */

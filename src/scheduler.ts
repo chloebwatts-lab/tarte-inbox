@@ -1,5 +1,5 @@
 import { config } from "./config.js"
-import { runTick } from "./pipeline.js"
+import { runTick, runInvoiceRequests } from "./pipeline.js"
 import { ingestNbi } from "./nbi/ingest.js"
 import { digestDue, sendDailyDigest } from "./digest.js"
 import { nudgeStaleBookings } from "./followups.js"
@@ -79,6 +79,13 @@ export function startScheduler(): void {
       console.error("[scheduler] tick error:", e)
     } finally {
       running = false
+    }
+    // On-demand invoices: staff apply the "Make Invoice" label to a thread.
+    try {
+      const { processed } = await runInvoiceRequests()
+      if (processed) console.log(`[scheduler] make-invoice: processed ${processed}`)
+    } catch (e) {
+      console.error("[scheduler] make-invoice error:", e instanceof Error ? e.message : e)
     }
   }
   // Kick the email tick immediately + on interval.

@@ -118,6 +118,20 @@ export async function listInboxThreads(
   return (r.data.threads ?? []).map((t) => t.id!).filter(Boolean)
 }
 
+/** Thread IDs currently carrying a given label (by name). Empty if none. */
+export async function listThreadsByLabel(labelName: string): Promise<string[]> {
+  const labels = await loadLabels()
+  const id = labels.get(labelName.toLowerCase())
+  if (!id) return []
+  const g = await gmail()
+  const r = await g.users.threads.list({
+    userId: "me",
+    labelIds: [id],
+    maxResults: 25,
+  })
+  return (r.data.threads ?? []).map((t) => t.id!).filter(Boolean)
+}
+
 export async function getThread(threadId: string): Promise<ParsedThread> {
   const g = await gmail()
   const r = await g.users.threads.get({

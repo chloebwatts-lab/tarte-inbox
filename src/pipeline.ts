@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
   getThread,
   listInboxThreads,
+  listThreadsByLabel,
   applyLabel,
   removeLabel,
   archiveThread,
@@ -42,6 +43,7 @@ import {
 import {
   extractInvoiceDetails,
   invoiceableNow,
+  manuallyInvoiceable,
   buildInvoiceFromExtraction,
 } from "./invoice/from-thread.js"
 import { db } from "./db/pool.js"
@@ -1008,7 +1010,18 @@ async function maybeAutoInvoice(
   }).format(new Date())
   const x = await extractInvoiceDetails(thread, today, weekday)
   if (!invoiceableNow(x)) return false
+  return await composeAndDeliverInvoice(thread, latest, category, x, today)
+}
 
+/** Build the invoice, draft the locking-in reply, deliver with the PDF
+ *  attached + BCC. Shared by the auto path and the Make-Invoice label. */
+async function composeAndDeliverInvoice(
+  thread: ParsedThread,
+  latest: ParsedMessage,
+  category: Category,
+  x: Awaited<ReturnType<typeof extractInvoiceDetails>>,
+  today: string
+): Promise<boolean> {
   const booking = await getBookingByThread(thread.threadId)
   const built = await buildInvoiceFromExtraction(x, {
     bookingId: booking?.id ?? null,
@@ -1060,8 +1073,76 @@ async function maybeAutoInvoice(
       },
     ],
   })
-  console.log(`[invoice] auto-built ${built.invoiceNumber} for thread ${thread.threadId} (${x.guests}pax, $${total})`)
+  console.log(`[invoice] built ${built.invoiceNumber} for thread ${thread.threadId} (${x.guests}pax, $${total})`)
   return true
+}
+
+// --- on-demand invoicing via the "Make Invoice" Gmail label ---
+// Staff apply this label to any function thread; the agent builds the invoice
+// (relaxed gate — a human asked for it) and drafts the reply with the PDF
+// attached + BCC. Answers Chris's "how do I invoice now instead of Shawna".
+export const MAKE_INVOICE_LABEL = "Tarte / Make Invoice"
+
+export async function runInvoiceRequests(): Promise<{ processed: number }> {
+  if (!invoiceConfigReady()) return { processed: 0 }
+  const ids = await listThreadsByLabel(MAKE_INVOICE_LABEL)
+  let processed = 0
+  const today = todayBrisbaneStr()
+  const weekday = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+  }).format(new Date())
+  for (const id of ids) {
+    try {
+      const thread = await getThread(id)
+      if (!thread.messages.length) {
+        await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
+        continue
+      }
+      const helloMail = config().HELLO_MAILBOX.toLowerCase()
+      let customerMsg = thread.messages[thread.messages.length - 1]!
+      for (let i = thread.messages.length - 1; i >= 0; i--) {
+        if (!thread.messages[i]!.from.toLowerCase().includes(helloMail)) {
+          customerMsg = thread.messages[i]!
+          break
+        }
+      }
+      const existingRow = await getThreadRow(id)
+      const category = ((existingRow?.category as Category) ?? "events_tea_garden_functions")
+      if (await threadHasInvoice(id)) {
+        // Already invoiced — just clear the label.
+        await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
+        processed++
+        continue
+      }
+      const x = await extractInvoiceDetails(thread, today, weekday)
+      if (manuallyInvoiceable(x)) {
+        await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
+      } else {
+        // Not enough to build a correct invoice — flag what's missing instead
+        // of guessing.
+        await applyLabel(id, ACTION_LABEL).catch(() => {})
+        await upsertThread({
+          thread_id: id,
+          last_message_id: thread.messages[thread.messages.length - 1]!.id,
+          state: "classified",
+          last_action: "labeled",
+          meta: {
+            invoiceRequestUnmet: true,
+            missing: x.missing,
+            note: "Make-Invoice requested but couldn't auto-build — missing price/date/numbers. Add the details to the thread and re-apply the label, or invoice manually.",
+          },
+        })
+        console.warn(`[invoice] make-invoice on ${id} unmet — missing: ${x.missing.join(", ")}`)
+      }
+      await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
+      processed++
+    } catch (e) {
+      console.error(`[invoice] make-invoice ${id} failed:`, e instanceof Error ? e.message : e)
+      await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
+    }
+  }
+  return { processed }
 }
 
 // --- function enquiry pipeline ---
