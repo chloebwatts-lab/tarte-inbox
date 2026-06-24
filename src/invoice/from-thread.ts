@@ -24,6 +24,7 @@ export interface InvoiceExtraction {
   guests: number | null
   event_date: string | null // YYYY-MM-DD
   time_label: string | null // e.g. "11:00am - 2:00pm"
+  dietaries: string | null // any dietary requirements given, e.g. "2x GF, 1x vegan"
   deposit_pct: number | null
   add_ons: Array<{ description: string; unit_price: number; per_person: boolean }>
   confidence: number
@@ -48,6 +49,7 @@ Output STRICT JSON only:
   "guests": <int|null>,
   "event_date": "<YYYY-MM-DD|null>",
   "time_label": "<e.g. 11:00am - 2:00pm|null>",
+  "dietaries": "<any dietary requirements/allergies the customer gave for the group, e.g. '2x gluten free, 1x vegan, 1x nut allergy'|null>",
   "deposit_pct": <number|null>,
   "add_ons": [{"description":"<e.g. Unlimited Drinks Package>","unit_price":<number>,"per_person":<true|false>}],
   "confidence": <0..1>,
@@ -101,6 +103,7 @@ function empty(): InvoiceExtraction {
     guests: null,
     event_date: null,
     time_label: null,
+    dietaries: null,
     deposit_pct: null,
     add_ons: [],
     confidence: 0,
@@ -129,6 +132,7 @@ function parse(text: string): InvoiceExtraction {
       guests: typeof o.guests === "number" ? o.guests : null,
       event_date: typeof o.event_date === "string" ? o.event_date : null,
       time_label: typeof o.time_label === "string" ? o.time_label : null,
+      dietaries: typeof o.dietaries === "string" ? o.dietaries : null,
       deposit_pct: typeof o.deposit_pct === "number" ? o.deposit_pct : null,
       add_ons: Array.isArray(o.add_ons)
         ? o.add_ons
@@ -226,6 +230,7 @@ export async function buildInvoiceFromExtraction(
       dateLabel,
       timeLabel: x.time_label ?? undefined,
       guestsLabel: x.guests != null ? `${x.guests} Adults` : undefined,
+      dietaries: x.dietaries ?? undefined,
     },
     lineItems,
     depositPct: x.deposit_pct ?? 50,

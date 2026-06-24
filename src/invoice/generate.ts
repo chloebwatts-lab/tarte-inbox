@@ -77,6 +77,7 @@ export interface EventDetails {
   dateLabel?: string
   timeLabel?: string
   guestsLabel?: string
+  dietaries?: string
 }
 
 export interface InvoiceInput {
@@ -263,6 +264,8 @@ export function renderInvoicePdf(p: {
     doc.text(billLines.join("\n"), L, y + 32)
 
     // ---- Event details panel (right) ----
+    // Row heights are measured per-value so long Event/Package text wraps
+    // cleanly instead of overlapping the next row.
     if (input.event) {
       const ev = input.event
       const rows: Array<[string, string]> = []
@@ -271,16 +274,26 @@ export function renderInvoicePdf(p: {
       if (ev.dateLabel) rows.push(["Date", ev.dateLabel])
       if (ev.timeLabel) rows.push(["Time", ev.timeLabel])
       if (ev.guestsLabel) rows.push(["Guests", ev.guestsLabel])
-      const panelX = 300
+      if (ev.dietaries) rows.push(["Dietaries", ev.dietaries])
+      const panelX = 285
       const panelW = R - panelX
-      const panelH = rows.length * 16 + 16
+      const labelW = 62
+      const valX = panelX + 12 + labelW
+      const valW = R - valX - 12
+      const padTop = 9
+      const gap = 6
+      doc.fontSize(9.5).font("Helvetica")
+      const heights = rows.map(([, v]) =>
+        Math.max(12, doc.heightOfString(v, { width: valW, align: "right" }))
+      )
+      const panelH = padTop * 2 + heights.reduce((a, b) => a + b + gap, 0) - gap
       doc.roundedRect(panelX, y, panelW, panelH, 6).fill("#f3f7f6")
-      let ry = y + 9
-      for (const [k, v] of rows) {
-        doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text(k, panelX + 12, ry, { width: 60 })
-        doc.fillColor(INK).fontSize(9.5).font("Helvetica").text(v, panelX + 76, ry, { width: panelW - 88, align: "right" })
-        ry += 16
-      }
+      let ry = y + padTop
+      rows.forEach(([k, v], i) => {
+        doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text(k, panelX + 12, ry + 1, { width: labelW })
+        doc.fillColor(INK).fontSize(9.5).font("Helvetica").text(v, valX, ry, { width: valW, align: "right" })
+        ry += heights[i]! + gap
+      })
       y = Math.max(y + 56, y + panelH)
     } else {
       y += 56
@@ -385,7 +398,7 @@ export function renderInvoicePdf(p: {
 
     // ---- Notes / terms ----
     const notes = input.notes ?? DEFAULT_NOTES
-    doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("PLEASE NOTE", L, y)
+    doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("BOOKING CONDITIONS", L, y)
     y += 13
     doc.fillColor(MUTED).fontSize(8.5).font("Helvetica")
     for (const n of notes) {
