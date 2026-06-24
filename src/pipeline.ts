@@ -1465,40 +1465,15 @@ async function handleFunctionEnquiry(
     : []
   const historyBlock = renderCustomerHistory(history)
 
-  // Both venues propose slots from the function calendar, cross-checked
-  // against Now Book It bookings (daily CSV ingest): Tea Garden slots with
-  // 3+ overlapping high teas are filtered out in proposeSlots. Beach House
-  // functions run in the Hideout (private space), so downstairs restaurant
-  // bookings don't block them.
-
-  // Beach House and Tea Garden: propose slots from the calendar.
-  // Three cases:
-  //   1. Customer named a specific day → propose times on that day.
-  //   2. Customer gave a date range (e.g. "last weekend in July") → enumerate
-  //      candidate days within the range and propose free ones.
-  //   3. No date info at all → no slots, drafter writes a holding reply.
-  let proposed: Array<{ start: string; end: string }> = []
-  const duration = extracted.duration_hours ?? SLOT_DURATION_DEFAULT_HOURS
-  if (extracted.preferred_date) {
-    proposed = await proposeSlots(
-      venue,
-      extracted.preferred_date,
-      extracted.preferred_time,
-      duration
-    )
-  } else if (extracted.date_range_start && extracted.date_range_end) {
-    proposed = await proposeSlotsInRange(
-      venue,
-      extracted.date_range_start,
-      extracted.date_range_end,
-      extracted.weekends_only,
-      extracted.preferred_time,
-      duration
-    )
-  }
+  // We do NOT auto-propose "available" time slots any more. The agent can't
+  // see the full picture of what's booked (manual entries, Hideout / private
+  // Tea Garden sections, functions not in NBI), so claiming a slot is free was
+  // repeatedly wrong (Lisa, Kate, Kim — "already a function on 1-4pm"). A
+  // human confirms the time against the real calendar. We work from the
+  // customer's OWN requested date/time instead.
+  const proposed: Array<{ start: string; end: string }> = []
   await updateBooking(booking.id, {
-    state: proposed.length ? "slots_proposed" : "enquiry_received",
-    proposed_slots: proposed,
+    state: "enquiry_received",
     notes: extracted.notes ?? booking.notes ?? undefined,
   })
 
@@ -1506,55 +1481,17 @@ async function handleFunctionEnquiry(
   const fnAllergenBlock = await maybeAllergenBlock(
     latest.subject + "\n" + dequote(latest.bodyText)
   )
-  const slotsBlock = proposed.length
-    ? "Available windows that look open:\n" +
-      proposed
-        .map(
-          (s) =>
-            `  • ${new Date(s.start).toLocaleString("en-AU", { timeZone: "Australia/Brisbane", weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" })}`
-        )
-        .join("\n") +
-      "\nCopy these dates, weekdays and times into the reply EXACTLY as written above — never recompute or reword a weekday."
-    : venue === "tea_garden"
-      ? "(Calendar didn't auto-suggest a window, but the Tea Garden accommodates group bookings — see the drafting rule below; do NOT decline.)"
-      : "(No open windows found for the dates given — see the drafting rule below.)"
-
+  const reqTime = extracted.preferred_time
   const dateBlock = extracted.preferred_date
-    ? `Preferred date: ${extracted.preferred_date}`
+    ? `Customer's requested date: ${extracted.preferred_date}${reqTime ? ` at ${reqTime}` : " (no time given)"}`
     : extracted.date_range_start && extracted.date_range_end
-      ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}`
-      : "Date: unspecified"
-
-  // For Tea Garden, look up NBI high tea bookings on the proposed date(s)
-  // so we can give a concrete picture of how busy the space already is.
-  let nbiContext = ""
-  if (venue === "tea_garden" && proposed.length) {
-    const dates = new Set(proposed.map((s) => s.start.slice(0, 10)))
-    const lines: string[] = []
-    for (const d of dates) {
-      const bookings = await nbiBookingsForDate("%high tea%", d)
-      const tbc = bookings.filter((b) => b.status === "Unconfirmed").length
-      lines.push(
-        `  ${d}: ${bookings.length} high tea booking(s) already in NBI` +
-          (bookings.length
-            ? ` (times: ${bookings.map((b) => b.booking_time.slice(0, 5)).join(", ")}${tbc ? `; ${tbc} of these are TBC — held but not locked in` : ""})`
-            : "")
-      )
-    }
-    nbiContext =
-      `\nNow Book It state on proposed dates:\n${lines.join("\n")}\n` +
-      `If a date the customer wants overlaps a TBC booking, you can say that window is currently held but not yet locked in, so it may free up.\n`
-  }
-
-  const teaGardenCaveat =
-    venue === "tea_garden"
-      ? " These Tea Garden slots have already been checked against existing high tea bookings, so propose them confidently. For groups over 12, add one light line that we'll do a final floor-layout check for their group size before locking it in. Never mention 'Now Book It' to the customer."
-      : ""
-
-  const wideRangeNote =
-    extracted.date_range_start && extracted.date_range_end
-      ? " The customer gave a wide date range and we've only listed the first few open windows — say plenty of other dates across their range are also available if none of these suit."
-      : ""
+      ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}${reqTime ? `, around ${reqTime}` : ""}`
+      : "Date: not specified yet"
+  const slotsBlock =
+    "(We do not assert specific available times — a teammate confirms availability against the live calendar. Work from the customer's requested date/time above.)"
+  const nbiContext = ""
+  const teaGardenCaveat = ""
+  const wideRangeNote = ""
 
   // Safety guards the drafter must respect.
   const guardNotes: string[] = []
@@ -1591,13 +1528,18 @@ async function handleFunctionEnquiry(
     venue === "tea_garden"
       ? "DO NOT tell them we have no availability — we can host this group. Warmly confirm we'd love to have them on the date and time they asked for. If it's a group dining/table booking over 12 on a weekend, point them to our Set Brunch Package (from $40pp, details in the attached functions pack) — and DON'T mention a deposit for a table booking. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
       : "We don't have the Hideout free on the date(s) they gave. Apologise briefly and ask for an alternative date window, don't make them spell out the same dates again."
+  // Keep noSlotsRule referenced (Tea Garden accommodation phrasing) without
+  // it claiming specific availability.
+  void noSlotsRule
 
   const draftingRules =
-    (proposed.length
-      ? "We've already checked the calendar. Propose the slots above to the customer with specific dates and times; DON'T ask them to re-confirm dates they've already given." +
-        wideRangeNote +
-        teaGardenCaveat
-      : noSlotsRule) +
+    `CRITICAL — availability: you CANNOT see our full live calendar, so NEVER tell the customer a specific time is "available", "open" or "free", and never invent/propose specific time slots. A teammate confirms the time against the real calendar. Instead:\n` +
+    `- Warmly confirm we'd love to host them${extracted.preferred_date ? " on their requested date" : ""}.\n` +
+    `- If they gave a preferred TIME, acknowledge it warmly and say we'll confirm it and lock it in. If they gave NO time, ask what time they're thinking.\n` +
+    `- If they gave NO date, ask for their preferred date.\n` +
+    `- For a Tea Garden GROUP DINING (table) booking, you can say we'd love to have them and we're flexible on timing within opening hours — they can let us know what suits.\n` +
+    `- Ask for final numbers and any dietaries.\n` +
+    `- ALWAYS add "needs_human" to flags (a teammate confirms availability before this sends).` +
     (guardNotes.length ? "\nGuards:\n- " + guardNotes.join("\n- ") : "")
 
   const d = await draft({
