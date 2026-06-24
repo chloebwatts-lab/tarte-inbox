@@ -46,6 +46,68 @@ export async function listEvents(
     }))
 }
 
+function bookingCalendarIds(): string[] {
+  return config()
+    .BOOKING_CALENDAR_IDS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+export interface DayEvent {
+  summary: string
+  timeLabel: string // "1:00pm - 4:00pm" or "all day"
+  allDay: boolean
+}
+
+function fmtTime(d: Date): string {
+  return d
+    .toLocaleTimeString("en-AU", {
+      timeZone: "Australia/Brisbane",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(/\s/g, "")
+    .toLowerCase()
+}
+
+/**
+ * Everything booked on a Brisbane calendar date across ALL the team's booking
+ * calendars — INCLUDING all-day events (functions are often added as all-day).
+ * This is the real availability picture the girls keep, not just NBI.
+ */
+export async function eventsOnDate(dateStr: string): Promise<DayEvent[]> {
+  const c = await cal()
+  const dayStart = new Date(`${dateStr}T00:00:00+10:00`)
+  const dayEnd = new Date(`${dateStr}T23:59:59+10:00`)
+  const out: DayEvent[] = []
+  for (const calId of bookingCalendarIds()) {
+    try {
+      const r = await c.events.list({
+        calendarId: calId,
+        timeMin: dayStart.toISOString(),
+        timeMax: dayEnd.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+      })
+      for (const e of r.data.items ?? []) {
+        if (e.start?.dateTime && e.end?.dateTime) {
+          out.push({
+            summary: e.summary ?? "(busy)",
+            allDay: false,
+            timeLabel: `${fmtTime(new Date(e.start.dateTime))} - ${fmtTime(new Date(e.end.dateTime))}`,
+          })
+        } else if (e.start?.date) {
+          out.push({ summary: e.summary ?? "(busy)", allDay: true, timeLabel: "all day" })
+        }
+      }
+    } catch {
+      // a calendar we can't read — skip rather than fail the whole check
+    }
+  }
+  return out
+}
+
 export interface Slot {
   start: Date
   end: Date

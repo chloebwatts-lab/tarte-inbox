@@ -21,7 +21,7 @@ import {
   type ParsedThread,
   type ParsedMessage,
 } from "./google/gmail.js"
-import { isSlotFree, createEvent, type Venue } from "./google/calendar.js"
+import { isSlotFree, createEvent, eventsOnDate, type Venue } from "./google/calendar.js"
 import {
   fetchCustomerHistory,
   renderCustomerHistory,
@@ -1487,8 +1487,26 @@ async function handleFunctionEnquiry(
     : extracted.date_range_start && extracted.date_range_end
       ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}${reqTime ? `, around ${reqTime}` : ""}`
       : "Date: not specified yet"
+  // Check the team's real calendars (incl. all-day function entries) for the
+  // customer's requested date so the agent answers accurately instead of
+  // guessing. A human still confirms before sending.
+  let calBlock = ""
+  const checkDate = extracted.preferred_date ?? extracted.date_range_start
+  if (checkDate) {
+    try {
+      const onDay = await eventsOnDate(checkDate)
+      calBlock = onDay.length
+        ? `\nWhat's ALREADY booked on ${checkDate} (from our team's calendar — internal, don't name other customers):\n` +
+          onDay.map((e) => `  • ${e.timeLabel}: ${e.summary}`).join("\n") +
+          `\nUse this: if their requested time clashes with one of these (or there's an all-day function on), gently tell them that time/day is already taken and ask for an alternative. If the day looks clear, you can say it looks available (a teammate will still confirm).\n`
+        : `\nOur team's calendar shows NOTHING booked on ${checkDate} so far — the day looks open (a teammate will still confirm).\n`
+    } catch {
+      /* calendar unavailable — fall back to asking, never assert */
+    }
+  }
   const slotsBlock =
-    "(We do not assert specific available times — a teammate confirms availability against the live calendar. Work from the customer's requested date/time above.)"
+    "(Don't invent fixed time slots. Use the calendar info below + the customer's requested time.)" +
+    calBlock
   const nbiContext = ""
   const teaGardenCaveat = ""
   const wideRangeNote = ""
@@ -1533,13 +1551,13 @@ async function handleFunctionEnquiry(
   void noSlotsRule
 
   const draftingRules =
-    `CRITICAL — availability: you CANNOT see our full live calendar, so NEVER tell the customer a specific time is "available", "open" or "free", and never invent/propose specific time slots. A teammate confirms the time against the real calendar. Instead:\n` +
-    `- Warmly confirm we'd love to host them${extracted.preferred_date ? " on their requested date" : ""}.\n` +
-    `- If they gave a preferred TIME, acknowledge it warmly and say we'll confirm it and lock it in. If they gave NO time, ask what time they're thinking.\n` +
-    `- If they gave NO date, ask for their preferred date.\n` +
-    `- For a Tea Garden GROUP DINING (table) booking, you can say we'd love to have them and we're flexible on timing within opening hours — they can let us know what suits.\n` +
+    `Availability: use the "What's already booked" calendar info above (our team's real calendar). Respond ACCURATELY:\n` +
+    `- If their requested date/time clashes with an existing booking (or an all-day function), DON'T offer that time — gently say it's already taken and ask for an alternative.\n` +
+    `- If the day looks clear, you can warmly confirm it looks available for their requested time (a teammate still does a final confirm).\n` +
+    `- Don't invent a list of fixed time slots. Work from the customer's requested time; if they gave none, ask what time they're thinking. If they gave no date, ask for one.\n` +
+    `- For a Tea Garden GROUP DINING (table) booking, say we'd love to have them and we're flexible on timing within opening hours.\n` +
     `- Ask for final numbers and any dietaries.\n` +
-    `- ALWAYS add "needs_human" to flags (a teammate confirms availability before this sends).` +
+    `- ALWAYS add "needs_human" to flags so a teammate confirms availability before this sends.` +
     (guardNotes.length ? "\nGuards:\n- " + guardNotes.join("\n- ") : "")
 
   const d = await draft({

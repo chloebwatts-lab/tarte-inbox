@@ -15,6 +15,11 @@ const schema = z.object({
 
   TEA_GARDEN_CALENDAR_ID: z.string().min(1),
   BEACH_HOUSE_CALENDAR_ID: z.string().min(1),
+  // The calendars the team actually keeps bookings/functions on — checked
+  // (incl. all-day events) when judging availability. Comma-separated.
+  BOOKING_CALENDAR_IDS: z
+    .string()
+    .default("primary,shawna@tarte.com.au"),
 
   XERO_CLIENT_ID: z.string().min(1),
   XERO_CLIENT_SECRET: z.string().min(1),
