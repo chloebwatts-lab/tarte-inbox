@@ -374,9 +374,19 @@ async function handleFormSubmission(
     playbook?.default_attachment_paths?.length
       ? await loadAttachments(playbook.default_attachment_paths)
       : []
-  const draftId = await createStandaloneDraft(
-    form.email,
-    form.subject,
+  // Draft IN the form thread (addressed To: the real customer), NOT as a
+  // detached standalone draft. Standalone drafts were invisible on the form
+  // thread, so staff thought the agent never replied (Lyn/Leina/Kay) and the
+  // drafts piled up disconnected (Shawna). In-thread + To:customer = visible
+  // on the "Action needed" thread AND reaches the customer when sent.
+  const draftId = await createInThreadDraft(
+    {
+      threadId: thread.threadId,
+      to: form.email,
+      subject: form.subject,
+      inReplyTo: latest.messageIdHeader ?? "",
+      references: latest.references ?? latest.messageIdHeader ?? "",
+    },
     d.body,
     config().HELLO_MAILBOX,
     "Tarte Team",
@@ -399,7 +409,7 @@ async function handleFormSubmission(
       flags: d.flags,
     },
   })
-  console.log(`[pipeline] form submission -> standalone draft to ${form.email} (${result.category})`)
+  console.log(`[pipeline] form submission -> in-thread draft to ${form.email} (${result.category})`)
   return true
 }
 
