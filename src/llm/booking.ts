@@ -30,6 +30,7 @@ const SYSTEM = `You read function/event enquiry emails for a Queensland hospital
 
 Rules:
 - Only fill fields you're reasonably sure about. Null is fine.
+- pax: ONLY a guest count the customer EXPLICITLY stated as a number or clear range ("15 people", "a group of 14", "12-22"). NEVER infer, estimate, or guess pax from the occasion (a "baby shower" does NOT imply any number). If no number is stated, pax MUST be null.
 - Australian date format in source → convert to YYYY-MM-DD.
 - If they named ONE specific day, use preferred_date and leave the range fields null.
 - If they gave a RANGE — e.g. "last weekend in July or first weekend in August",
