@@ -108,8 +108,8 @@ export function renderCustomerHistory(history: CustomerHistoryEntry[]): string {
     block += entry
   }
   return (
-    `\n--- THIS CUSTOMER'S OTHER THREADS WITH US (read in full) ---` +
+    `\n--- THIS CUSTOMER'S OTHER THREADS WITH US (background context) ---` +
     block +
-    `\nUse everything above as known context — including from these separate chains — so you give true, consistent answers and never re-ask for details the customer already gave us. Don't quote these threads back at them unless relevant.\n`
+    `\nThese are SEPARATE threads and may be DIFFERENT enquiries/events. Use them only to stay consistent and avoid contradicting what we've already told this customer. Do NOT assume a guest count, date, time or package from another thread applies to the CURRENT enquiry unless the customer clearly says it's the same event. For the current enquiry, use ONLY details stated in this thread — if numbers or dates aren't given here, treat them as unknown and ask. Don't quote these other threads back at them.\n`
   )
 }
