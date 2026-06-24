@@ -112,7 +112,30 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
       GROUP BY last_action`
   )
 
+  // Invoices auto-generated in the last 24h — staff should review + send.
+  const invoices = await db().query<{
+    invoice_number: string
+    customer_name: string | null
+    amount: string
+  }>(
+    `SELECT invoice_number, customer_name, amount FROM inbox_invoices
+      WHERE created_at > now() - interval '24 hours'
+      ORDER BY id DESC`
+  )
+
   const sections: string[] = []
+
+  if (invoices.rows.length) {
+    sections.push(
+      `💸 Deposit invoices auto-generated — REVIEW the draft + invoice, then send (${invoices.rows.length}):\n` +
+        invoices.rows
+          .map(
+            (r) =>
+              `  • ${r.invoice_number} — ${r.customer_name ?? "?"} (50% of $${Number(r.amount).toLocaleString("en-AU")})`
+          )
+          .join("\n")
+    )
+  }
 
   if (urgent.rows.length) {
     sections.push(
@@ -244,7 +267,8 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     urgent.rows.length +
     drafts.rows.length +
     needsHuman.rows.length +
-    formDrafts.rows.length
+    formDrafts.rows.length +
+    invoices.rows.length
   const body =
     (sections.length
       ? sections.join("\n\n")
