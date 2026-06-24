@@ -1560,7 +1560,7 @@ async function handleFunctionEnquiry(
   const guardNotes: string[] = []
   if (extracted.pax && extracted.pax > 30) {
     guardNotes.push(
-      `Large group (${extracted.pax}). Don't make it sound hard — we CAN host big groups. Recommend TEA GARDEN WHOLE-VENUE HIRE with a package (High Tea + Beer & Prosecco $55pp, or + Canapés + Cocktails $90pp) and point them to the attached functions pack for the options. Add "needs_human" so the team confirms details.`
+      `Large group (${extracted.pax}). Don't make it sound hard — we CAN host big groups. Recommend Tea Garden whole-venue hire as the fit and refer them to the attached functions pack for packages/pricing. Do NOT list hire fees, package prices, bond or deposit figures in the email — keep it short. Add "needs_human".`
     )
   }
   if (!extracted.preferred_date && !extracted.date_range_start && /\b(\d{1,2})(st|nd|rd|th)?\b/.test(latest.subject + " " + latest.bodyText) && !/20\d\d/.test(latest.bodyText)) {
