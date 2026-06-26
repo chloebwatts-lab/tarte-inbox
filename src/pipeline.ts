@@ -8,6 +8,7 @@ import {
   listThreadsByLabel,
   listSpamThreads,
   unspamThread,
+  ensureLabel,
   applyLabel,
   removeLabel,
   archiveThread,
@@ -1605,6 +1606,160 @@ export async function runInvoiceRequests(): Promise<{ processed: number }> {
     } catch (e) {
       console.error(`[invoice] make-invoice ${id} failed:`, e instanceof Error ? e.message : e)
       await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
+    }
+  }
+  return { processed }
+}
+
+// --- on-demand invoice AMENDMENT via the "Update Invoice" Gmail label ---
+// Numbers change (e.g. guest count) AFTER an invoice was sent. A staffer applies
+// this label to the thread; the agent re-reads the thread's latest agreed
+// details, rebuilds the existing invoice(s) for that thread (deposit + balance
+// stay in sync), and drops the corrected version as a draft to review + send.
+// Entirely Gmail-native — no website needed.
+export const UPDATE_INVOICE_LABEL = "Tarte / Update Invoice"
+
+export async function runInvoiceUpdates(): Promise<{ processed: number }> {
+  if (!invoiceConfigReady()) return { processed: 0 }
+  // Make sure the label exists in Gmail so staff can find + apply it.
+  await ensureLabel(UPDATE_INVOICE_LABEL).catch(() => {})
+  const ids = await listThreadsByLabel(UPDATE_INVOICE_LABEL)
+  let processed = 0
+  const today = todayBrisbaneStr()
+  const weekday = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+  }).format(new Date())
+  for (const id of ids) {
+    try {
+      const thread = await getThread(id)
+      if (!thread.messages.length) {
+        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+        continue
+      }
+      const helloMail = config().HELLO_MAILBOX.toLowerCase()
+      let customerMsg = thread.messages[thread.messages.length - 1]!
+      for (let i = thread.messages.length - 1; i >= 0; i--) {
+        if (!thread.messages[i]!.from.toLowerCase().includes(helloMail)) {
+          customerMsg = thread.messages[i]!
+          break
+        }
+      }
+      const existingRow = await getThreadRow(id)
+      const category = (existingRow?.category as Category) ?? "events_tea_garden_functions"
+
+      // Which invoice kinds already exist on this thread?
+      const kindsRes = await db().query<{ kind: "standard" | "balance" }>(
+        `SELECT DISTINCT kind FROM inbox_invoices WHERE thread_id = $1 AND invoice_number <> 'PENDING'`,
+        [id]
+      )
+      const kinds = kindsRes.rows.map((r) => r.kind)
+
+      const x = await extractInvoiceDetails(thread, today, weekday)
+
+      // No invoice yet → behave like Make-Invoice (build the first one).
+      if (kinds.length === 0) {
+        if (manuallyInvoiceable(x)) {
+          await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
+        } else {
+          await applyLabel(id, ACTION_LABEL).catch(() => {})
+          await upsertThread({
+            thread_id: id,
+            last_message_id: thread.messages[thread.messages.length - 1]!.id,
+            state: "classified",
+            last_action: "labeled",
+            meta: { invoiceUpdateUnmet: true, missing: x.missing },
+          })
+        }
+        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+        processed++
+        continue
+      }
+
+      // Need usable numbers to rebuild a correct invoice.
+      if (!manuallyInvoiceable(x)) {
+        await applyLabel(id, ACTION_LABEL).catch(() => {})
+        await upsertThread({
+          thread_id: id,
+          last_message_id: thread.messages[thread.messages.length - 1]!.id,
+          state: "classified",
+          last_action: "labeled",
+          meta: {
+            invoiceUpdateUnmet: true,
+            missing: x.missing,
+            note: "Update-Invoice requested but the new details aren't clear in the thread. State the change (e.g. new guest count) in the thread, then re-apply the label.",
+          },
+        })
+        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+        console.warn(`[invoice] update on ${id} unmet — missing: ${x.missing.join(", ")}`)
+        continue
+      }
+
+      const booking = await getBookingByThread(id)
+      // Rebuild every existing invoice kind from the latest numbers (deposit +
+      // balance stay consistent). Keep the balance PDF for the draft if present.
+      let attach: { invoiceNumber: string; pdf: Buffer; isBalance: boolean } | null = null
+      for (const kind of kinds) {
+        const built = await buildInvoiceFromExtraction(x, {
+          bookingId: booking?.id ?? null,
+          threadId: id,
+          todayBrisbane: today,
+          kind,
+        })
+        if (!attach || kind === "balance") {
+          attach = { invoiceNumber: built.invoiceNumber, pdf: built.pdf, isBalance: kind === "balance" }
+        }
+      }
+      if (!attach) {
+        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+        continue
+      }
+
+      const playbook = await getPlaybook(category)
+      const total = x.add_ons.reduce(
+        (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
+        (x.per_person_price ?? 0) * (x.guests ?? 0)
+      )
+      const d = await draft({
+        category,
+        playbook,
+        threadHistory: thread.messages.map(toHistoryItem),
+        customerName: x.customer_name ?? firstName(customerMsg.from),
+        customExtras: [
+          {
+            role: "user",
+            content:
+              `The booking details have changed and we've UPDATED their invoice (${attach.invoiceNumber}) — it's ATTACHED as a PDF.\n` +
+              `Current details: ${x.guests ?? "?"} guests${x.event_date ? `, ${x.event_date}` : ""}${
+                x.time_label ? `, ${x.time_label}` : ""
+              }; total $${total.toFixed(2)}.\n` +
+              `Drafting rule: warm, short reply. Let them know we've updated their invoice to reflect the change and attached the new copy. Don't re-list every line. A couple of sentences.`,
+          },
+        ],
+      })
+      if (!d.body) {
+        await flagDraftFailure(thread, customerMsg, category)
+        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+        continue
+      }
+      if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+      const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
+      await deliver(thread, customerMsg, d, category, playbook, {
+        bcc: INVOICE_BCC,
+        extraAttachments: [
+          {
+            filename: `${attach.invoiceNumber} - ${safeName}${attach.isBalance ? " (Balance)" : ""}.pdf`,
+            contentType: "application/pdf",
+            data: attach.pdf,
+          },
+        ],
+      })
+      await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+      processed++
+      console.log(`[invoice] updated ${attach.invoiceNumber} from thread ${id} (${kinds.join("+")})`)
+    } catch (e) {
+      console.error(`[invoice] update-invoice ${id} failed:`, e instanceof Error ? e.message : e)
+      await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
     }
   }
   return { processed }

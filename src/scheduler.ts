@@ -1,5 +1,5 @@
 import { config } from "./config.js"
-import { runTick, runInvoiceRequests, sweepInvoiceDriveUploads, sweepSpam } from "./pipeline.js"
+import { runTick, runInvoiceRequests, runInvoiceUpdates, sweepInvoiceDriveUploads, sweepSpam } from "./pipeline.js"
 import { ingestNbi } from "./nbi/ingest.js"
 import { digestDue, sendDailyDigest } from "./digest.js"
 import { nudgeStaleBookings, followUpQuietInfoThreads } from "./followups.js"
@@ -101,6 +101,13 @@ export function startScheduler(): void {
       if (processed) console.log(`[scheduler] make-invoice: processed ${processed}`)
     } catch (e) {
       console.error("[scheduler] make-invoice error:", e instanceof Error ? e.message : e)
+    }
+    // On-demand invoice amendments: staff apply the "Update Invoice" label.
+    try {
+      const { processed } = await runInvoiceUpdates()
+      if (processed) console.log(`[scheduler] update-invoice: processed ${processed}`)
+    } catch (e) {
+      console.error("[scheduler] update-invoice error:", e instanceof Error ? e.message : e)
     }
   }
   // Kick the email tick immediately + on interval.

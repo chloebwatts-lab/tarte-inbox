@@ -170,7 +170,8 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
             )
           })
           .join("\n") +
-        browse
+        browse +
+        `\n  Numbers changed? Apply the "Tarte / Update Invoice" label to the thread and the invoice rebuilds itself as a fresh draft.`
     )
   }
 
