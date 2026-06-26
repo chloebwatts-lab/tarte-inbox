@@ -67,6 +67,12 @@ const schema = z.object({
   // Requires re-auth (drive.file scope) at /oauth/google/start.
   INVOICE_DRIVE_FOLDER_ID: z.string().optional(),
   INVOICE_DRIVE_FOLDER_NAME: z.string().default("Tarte Invoices"),
+
+  // Secret token that unlocks the /invoices browse + edit pages without a
+  // login prompt (capability URL). Visiting ?k=<token> once sets a cookie so
+  // the rest just works. If unset, the pages are closed (403) — set it to
+  // enable password-free access. Keep it long + random.
+  INVOICE_PORTAL_TOKEN: z.string().optional(),
 })
 
 export type Config = z.infer<typeof schema>

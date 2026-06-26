@@ -36,6 +36,7 @@ services:
       INVOICE_DEPOSIT_DUE_DAYS: ${INVOICE_DEPOSIT_DUE_DAYS:-14}
       INVOICE_DRIVE_FOLDER_ID: ${INVOICE_DRIVE_FOLDER_ID:-}
       INVOICE_DRIVE_FOLDER_NAME: ${INVOICE_DRIVE_FOLDER_NAME:-Tarte Invoices}
+      INVOICE_PORTAL_TOKEN: ${INVOICE_PORTAL_TOKEN:-}
     volumes:
       # Outgoing attachments (function packs, menus, etc.) bind-mounted from
       # the host so they survive image rebuilds and can be updated without

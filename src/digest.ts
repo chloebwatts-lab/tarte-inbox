@@ -154,6 +154,9 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
 
   if (invoices.rows.length) {
     const base = config().PUBLIC_BASE_URL.replace(/\/$/, "")
+    const token = config().INVOICE_PORTAL_TOKEN
+    const k = token ? `&k=${encodeURIComponent(token)}` : ""
+    const browse = token ? `\n  Browse all invoices: ${base}/invoices?k=${encodeURIComponent(token)}` : ""
     sections.push(
       `💸 Invoices auto-generated — REVIEW the draft + invoice, then send (${invoices.rows.length}):\n` +
         invoices.rows
@@ -163,10 +166,11 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
             const desc = isBal ? `balance of ${amt}` : `50% of ${amt}`
             return (
               `  • ${r.invoice_number}${isBal ? " (BALANCE)" : ""} — ${r.customer_name ?? "?"} (${desc})\n` +
-              `    Need a tweak? Edit + regenerate: ${base}/invoice/edit?n=${encodeURIComponent(r.invoice_number)}`
+              `    Need a tweak? Edit + regenerate: ${base}/invoice/edit?n=${encodeURIComponent(r.invoice_number)}${k}`
             )
           })
-          .join("\n")
+          .join("\n") +
+        browse
     )
   }
 

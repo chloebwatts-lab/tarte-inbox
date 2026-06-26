@@ -1,4 +1,6 @@
 import { Hono } from "hono"
+import { getCookie, setCookie } from "hono/cookie"
+import type { Context } from "hono"
 import { config } from "./config.js"
 import {
   googleAuthUrl,
@@ -220,6 +222,26 @@ const esc = (s: unknown): string =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch] as string)
   )
 
+// The invoice pages are password-free but gated by a secret token (capability
+// URL). Presenting ?k=<token> once sets a cookie so all the links + the form
+// then work without re-passing it. Closed (403) until INVOICE_PORTAL_TOKEN is set.
+function portalAuthed(c: Context): boolean {
+  const token = config().INVOICE_PORTAL_TOKEN
+  if (!token) return false
+  const k = c.req.query("k")
+  if (k && k === token) {
+    setCookie(c, "inv_portal", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 60, // 60 days
+    })
+    return true
+  }
+  return getCookie(c, "inv_portal") === token
+}
+
 function editForm(invoiceNumber: string, x: Record<string, unknown>, kind: string, msg?: string): string {
   const field = (label: string, name: string, value: unknown, type = "text"): string =>
     `<label>${esc(label)}<input type="${type}" name="${name}" value="${esc(value)}"${
@@ -260,6 +282,7 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
 }
 
 app.get("/invoices", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
   const rows = await listInvoices()
   const fmt = (n: unknown): string => `$${Number(n ?? 0).toLocaleString("en-AU")}`
   const body = rows
@@ -301,6 +324,7 @@ app.get("/invoices", async (c) => {
 })
 
 app.get("/invoice/edit", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
   const n = c.req.query("n")
   if (!n) return c.text("missing ?n=<invoice number>", 400)
   const rec = await getInvoiceForEdit(n)
@@ -310,6 +334,7 @@ app.get("/invoice/edit", async (c) => {
 })
 
 app.post("/invoice/edit", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
   const form = await c.req.parseBody()
   const n = String(form["n"] ?? "")
   if (!n) return c.text("missing invoice number", 400)
