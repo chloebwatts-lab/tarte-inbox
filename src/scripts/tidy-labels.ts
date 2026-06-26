@@ -24,6 +24,7 @@ const C = (backgroundColor: string, textColor: string): { backgroundColor: strin
 const COLORS: Record<string, { backgroundColor: string; textColor: string }> = {
   // attention
   [URGENT_LABEL]: C("#fb4c2f", "#ffffff"),
+  "URGENT": C("#fb4c2f", "#ffffff"), // bare category label (applied alongside Tarte / URGENT)
   [ACTION_LABEL]: C("#ffad47", "#ffffff"),
   "Needs human": C("#ffbc6b", "#000000"),
   // money
