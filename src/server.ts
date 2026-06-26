@@ -10,6 +10,7 @@ import {
   progressBookingToInvoice,
   getInvoiceForEdit,
   regenerateInvoiceFromEdits,
+  listInvoices,
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
@@ -234,7 +235,9 @@ function editForm(invoiceNumber: string, x: Record<string, unknown>, kind: strin
  button{margin-top:16px;background:#6e8d85;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;cursor:pointer}
  .msg{background:#f3f7f6;border-radius:6px;padding:10px 12px;margin:12px 0}
  .note{color:#8a8a8a;font-size:12px;margin-top:14px}
+ a.back{color:#8a8a8a;font-size:13px;text-decoration:none}
 </style>
+<a class="back" href="/invoices">← All invoices</a>
 <h1>Edit invoice ${esc(invoiceNumber)}</h1>
 <div class="tag">${esc(kind === "balance" ? "Balance invoice" : "Deposit invoice")} — change a field and regenerate. Totals recalculate automatically.</div>
 ${msg ? `<div class="msg">${msg}</div>` : ""}
@@ -255,6 +258,47 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
 </form>
 <div class="note">This rebuilds the PDF and refreshes the draft in the email thread (BCC accounts &amp; Shawna). It does not send — review and send from Gmail as usual.</div>`
 }
+
+app.get("/invoices", async (c) => {
+  const rows = await listInvoices()
+  const fmt = (n: unknown): string => `$${Number(n ?? 0).toLocaleString("en-AU")}`
+  const body = rows
+    .map((r) => {
+      const editable = r.editable
+      const action = editable
+        ? `<a href="/invoice/edit?n=${encodeURIComponent(r.invoice_number)}">Edit</a>`
+        : `<span class="muted">not editable*</span>`
+      const pay = r.payment_status ? ` · <span class="pay ${esc(r.payment_status)}">${esc(r.payment_status)}</span>` : ""
+      return `<tr>
+        <td><b>${esc(r.invoice_number)}</b>${r.kind === "balance" ? ' <span class="bal">BAL</span>' : ""}</td>
+        <td>${esc(r.customer_name) || "?"}</td>
+        <td class="r">${fmt(r.amount)}</td>
+        <td>${esc(String(r.created_at).slice(0, 10))}${pay}</td>
+        <td>${action}</td>
+      </tr>`
+    })
+    .join("")
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tarte invoices</title>
+<style>
+ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#3a3a3a}
+ h1{font-size:19px;color:#6e8d85} table{border-collapse:collapse;width:100%;margin-top:12px}
+ th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #eef2f1;font-size:14px}
+ th{color:#8a8a8a;font-weight:600;font-size:12px;text-transform:uppercase}
+ td.r{text-align:right} a{color:#6e8d85;font-weight:600} .muted{color:#b3b3b3}
+ .bal{font-size:10px;background:#eef3f2;color:#6e8d85;padding:1px 5px;border-radius:4px}
+ .pay{font-size:11px;text-transform:capitalize} .pay.verified{color:#3f8f5f} .pay.unmatched,.pay.claimed{color:#c08a2a}
+ .find{margin:14px 0} .find input{padding:8px;border:1px solid #d9e2df;border-radius:6px;font-size:15px}
+ .note{color:#8a8a8a;font-size:12px;margin-top:16px}
+</style>
+<h1>Invoices</h1>
+<form class="find" action="/invoice/edit" method="get">
+  <input type="text" name="n" placeholder="Find by number, e.g. TARTE-2026-00006" size="32">
+  <button type="submit">Open</button>
+</form>
+<table><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Date</th><th></th></tr>${body}</table>
+<div class="note">* Older invoices created before the edit feature have no stored detail to regenerate from. Any invoice generated from now on is editable.</div>`)
+})
 
 app.get("/invoice/edit", async (c) => {
   const n = c.req.query("n")

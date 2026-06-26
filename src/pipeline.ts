@@ -1274,6 +1274,32 @@ export interface InvoiceRecord {
   editable: InvoiceExtraction | null
 }
 
+export interface InvoiceListRow {
+  invoice_number: string
+  kind: "standard" | "balance"
+  customer_name: string | null
+  amount: string
+  created_at: string
+  editable: boolean
+  payment_status: string | null
+}
+
+/** All invoices, most recent first, for the browse page. */
+export async function listInvoices(): Promise<InvoiceListRow[]> {
+  const { rows } = await db().query<InvoiceListRow>(
+    `SELECT i.invoice_number, i.kind, i.customer_name, i.amount, i.created_at,
+            (i.editable IS NOT NULL) AS editable,
+            p.status AS payment_status
+       FROM inbox_invoices i
+       LEFT JOIN LATERAL (
+         SELECT status FROM inbox_payments WHERE thread_id = i.thread_id ORDER BY id DESC LIMIT 1
+       ) p ON true
+      WHERE i.invoice_number <> 'PENDING'
+      ORDER BY i.id DESC`
+  )
+  return rows
+}
+
 /** Load an invoice (with its editable detail) for the quick-amend form. */
 export async function getInvoiceForEdit(invoiceNumber: string): Promise<InvoiceRecord | null> {
   const { rows } = await db().query<InvoiceRecord>(
