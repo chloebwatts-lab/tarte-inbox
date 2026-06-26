@@ -6,6 +6,8 @@ import {
   getThread,
   listInboxThreads,
   listThreadsByLabel,
+  listSpamThreads,
+  unspamThread,
   applyLabel,
   removeLabel,
   archiveThread,
@@ -22,6 +24,7 @@ import {
   type ParsedMessage,
 } from "./google/gmail.js"
 import { isSlotFree, createEvent, eventsOnDate, type Venue } from "./google/calendar.js"
+import { driveReady, uploadInvoicePdf } from "./google/drive.js"
 import {
   fetchCustomerHistory,
   renderCustomerHistory,
@@ -35,6 +38,8 @@ import {
   findOrCreateContact,
   createAuthorisedInvoice,
   getInvoiceOnlineUrl,
+  xeroBankMatchReady,
+  findIncomingPayment,
 } from "./xero/client.js"
 import {
   invoiceConfigReady,
@@ -45,7 +50,9 @@ import {
   invoiceableNow,
   manuallyInvoiceable,
   buildInvoiceFromExtraction,
+  type InvoiceExtraction,
 } from "./invoice/from-thread.js"
+import { looksLikeDepositPaidClaim, confirmDepositPaid } from "./llm/deposit-paid.js"
 import { db } from "./db/pool.js"
 import {
   classify,
@@ -125,6 +132,44 @@ export async function runTick(): Promise<{ seen: number; acted: number }> {
   return { seen, acted }
 }
 
+// Genuine customer enquiries (especially function/booking requests) occasionally
+// get caught in Spam. This sweep rescues ones that look like a real enquiry back
+// into the Inbox so the normal pipeline picks them up; obvious junk is left.
+const ENQUIRY_HINT =
+  /\b(function|event|high tea|hightea|booking|book a|reserve|reservation|table|party|baby shower|hens|birthday|wedding|engagement|catering|cater|cake|private (?:hire|dining|room)|hideout|tea garden|quote|enquir|inquir|availab|how much|price|menu|christmas|celebrat)\b/i
+
+export async function sweepSpam(): Promise<{ scanned: number; rescued: number }> {
+  let scanned = 0
+  let rescued = 0
+  let ids: string[]
+  try {
+    ids = await listSpamThreads()
+  } catch (e) {
+    console.error("[spam] list failed:", e instanceof Error ? e.message : e)
+    return { scanned: 0, rescued: 0 }
+  }
+  for (const id of ids) {
+    scanned++
+    try {
+      const thread = await getThread(id)
+      const latest = thread.messages[thread.messages.length - 1]
+      if (!latest) continue
+      // Never rescue obvious automated/cold senders.
+      if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(latest.from)) || isLikelySupplier(latest.from)) continue
+      const hay = `${latest.subject}\n${latest.bodyText}`
+      if (!ENQUIRY_HINT.test(hay)) continue
+      await unspamThread(id)
+      rescued++
+      console.log(`[spam] rescued thread ${id} (${latest.subject.slice(0, 60)})`)
+      await processThread(id)
+    } catch (e) {
+      console.error(`[spam] thread ${id} failed:`, e instanceof Error ? e.message : e)
+    }
+  }
+  if (rescued) console.log(`[spam] swept ${scanned}, rescued ${rescued}`)
+  return { scanned, rescued }
+}
+
 const HANDOFF_ADDRESSES = ["shawna@tarte.com.au"] // forwards to these = humans will handle, agent backs off
 
 function threadHandedOff(thread: ParsedThread): boolean {
@@ -173,6 +218,35 @@ const RECEIPT_SUBJECT_PATTERNS = [
   /\binvoice #?\d/i, // "Invoice 12345"
   /^quote #?\d/i,
 ]
+
+// Known suppliers + their billing domains (from the COGS supplier map). A
+// supplier email must NEVER get an auto-reply or a customer-style draft, even
+// if classification slips — so this is a hard sender guard, independent of the
+// classifier's "suppliers" category.
+const SUPPLIER_SENDER_PATTERNS = [
+  /@bidfood\./i,
+  /pacificfruitandveg\.com\.au/i,
+  /@jensens\.net\.au/i,
+  /theprovedores\.com\.au/i,
+  /@easyvend\.com\.au/i,
+  /@pencilpay\.com/i, // Eustralis billing platform
+  /@ordermentum\.com/i,
+  /son ?of ?a ?bunn/i,
+  /global food ?& ?wine|globalfood/i,
+  /marrow ?meats/i,
+  /\bfermex\b/i,
+  /\bjoval\b/i,
+  /\bparamount\b/i,
+  /produce ?oz/i,
+  /gold ?coast ?eggs/i,
+  /\bbreadtop\b/i,
+  /coastal ?fresh/i,
+  /\beustralis\b/i,
+]
+
+function isLikelySupplier(from: string): boolean {
+  return SUPPLIER_SENDER_PATTERNS.some((p) => p.test(from))
+}
 
 function isAutomatedReceipt(from: string, subject: string): boolean {
   const lowerFrom = from.toLowerCase()
@@ -443,6 +517,10 @@ export async function processThread(
   // Edit-capture: if the latest message is ours, and we previously drafted, log diff.
   if (fromUs && existing?.last_action === "drafted") {
     await captureEdit(thread, existing.meta)
+    // Staff sent the reply — if it carried an invoice, archive the PDF to Drive.
+    await archiveThreadInvoicesToDrive(threadId).catch((e) =>
+      console.error("[drive] archive-on-send error:", e instanceof Error ? e.message : e)
+    )
     // Staff replied — their action item is done, clear the flag.
     await removeLabel(threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
@@ -518,6 +596,15 @@ export async function processThread(
     last_action: "labeled",
     meta: { rationale: result.rationale },
   })
+
+  // Customer says they've paid the deposit → acknowledge + attach a balance
+  // invoice (human verifies the payment before sending). Runs before any
+  // handed-off / already-invoiced routing so the claim isn't swallowed.
+  try {
+    if (await maybeHandleDepositPaid(thread, latest)) return true
+  } catch (e) {
+    console.error("[invoice] deposit-paid handling failed:", e instanceof Error ? e.message : e)
+  }
 
   // Handed off to a human via forward (e.g. shawna@tarte.com.au)?
   // Label only, don't draft — EXCEPT for invoicing: forwarding a "please
@@ -642,7 +729,14 @@ export async function processThread(
     // the inbox with its category label, no action flag.
     return true
   }
-  if (result.category === "needs_human" || result.category === "accounts_invoices") {
+  if (
+    result.category === "needs_human" ||
+    result.category === "accounts_invoices" ||
+    // Suppliers: never auto-reply or draft a customer-style reply. Label so
+    // staff see it and handle directly (price lists, statements, order
+    // confirmations, a rep's question — none of these want an agent reply).
+    result.category === "suppliers"
+  ) {
     await applyLabel(threadId, ACTION_LABEL)
     return true
   }
@@ -832,6 +926,19 @@ async function deliver(
     })
     return true
   }
+  // Hard supplier guard: never auto-reply/draft to a known supplier sender,
+  // even if it slipped into a drafting category. Label for a human instead.
+  if (isLikelySupplier(latest.from)) {
+    await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: { suppressedSupplierReply: true, category },
+    })
+    return true
+  }
   const ctx = {
     threadId: thread.threadId,
     to: latest.from,
@@ -995,6 +1102,328 @@ async function threadHasInvoice(threadId: string): Promise<boolean> {
     [threadId]
   )
   return rows.length > 0
+}
+
+async function threadHasInvoiceKind(threadId: string, kind: "standard" | "balance"): Promise<boolean> {
+  const { rows } = await db().query(
+    `SELECT 1 FROM inbox_invoices WHERE thread_id = $1 AND kind = $2 AND invoice_number <> 'PENDING' LIMIT 1`,
+    [threadId, kind]
+  )
+  return rows.length > 0
+}
+
+/**
+ * A customer reply says they've paid the deposit → draft a warm acknowledgement
+ * with a BALANCE invoice (remaining amount) attached, mark the booking
+ * deposit_paid, and flag a human to verify the payment landed before sending.
+ * Never auto-sends and never treats the claim as proof of payment. Idempotent:
+ * once a balance invoice exists for the thread it won't fire again.
+ * Returns true when it handled the thread (caller should stop).
+ */
+async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessage): Promise<boolean> {
+  if (!invoiceConfigReady()) return false
+  // Needs an existing deposit invoice, and no balance invoice yet.
+  if (!(await threadHasInvoiceKind(thread.threadId, "standard"))) return false
+  if (await threadHasInvoiceKind(thread.threadId, "balance")) return false
+
+  const latestText = dequote(latest.bodyText)
+  if (!looksLikeDepositPaidClaim(latestText)) return false
+  if (!(await confirmDepositPaid(latestText))) return false
+
+  // Rebuild from the deposit invoice's stored detail (the agreed numbers).
+  const { rows } = await db().query<{ editable: InvoiceExtraction | null; invoice_number: string }>(
+    `SELECT editable, invoice_number FROM inbox_invoices
+      WHERE thread_id = $1 AND kind = 'standard' AND editable IS NOT NULL
+      ORDER BY id DESC LIMIT 1`,
+    [thread.threadId]
+  )
+  const x = rows[0]?.editable
+  const depositInvoiceNumber = rows[0]?.invoice_number ?? null
+  if (!x) {
+    // We can't safely build a balance invoice without the agreed detail —
+    // flag for a human rather than guessing.
+    await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: { depositPaidClaim: true, balanceInvoiceMissingDetail: true },
+    })
+    return true
+  }
+
+  const today = todayBrisbaneStr()
+  const booking = await getBookingByThread(thread.threadId)
+  const gross = x.add_ons.reduce(
+    (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
+    (x.per_person_price ?? 0) * (x.guests ?? 0)
+  )
+  const depositPaid = Math.round((gross * (x.deposit_pct ?? 50)) / 100 * 100) / 100
+  const balance = Math.round((gross - depositPaid) * 100) / 100
+
+  // Try to VERIFY the payment against the Xero bank feed (best-effort). The
+  // customer's word alone is never treated as proof — if we can't match it, we
+  // flag a human and don't claim receipt.
+  let verified = false
+  let matchedTxnId: string | null = null
+  let matchedRef: string | null = null
+  const bankMatchReady = await xeroBankMatchReady()
+  if (bankMatchReady) {
+    try {
+      const match = await findIncomingPayment({
+        amount: depositPaid,
+        reference: depositInvoiceNumber,
+        customerName: x.customer_name,
+      })
+      if (match) {
+        verified = true
+        matchedTxnId = match.bankTransactionId
+        matchedRef = match.reference
+      }
+    } catch (e) {
+      console.error("[xero] bank match failed:", e instanceof Error ? e.message : e)
+    }
+  }
+
+  if (booking) await updateBooking(booking.id, { state: "deposit_paid" }).catch(() => {})
+
+  // Record the payment claim/verification (idempotent per thread+invoice).
+  await db()
+    .query(
+      `INSERT INTO inbox_payments (thread_id, invoice_number, booking_id, amount, status, matched_txn_id, matched_reference, verified_at, confirmation_drafted_at)
+       SELECT $1, $2, $3, $4, $5, $6, $7, ${verified ? "now()" : "NULL"}, now()
+        WHERE NOT EXISTS (SELECT 1 FROM inbox_payments WHERE thread_id = $1 AND confirmation_drafted_at IS NOT NULL)`,
+      [
+        thread.threadId,
+        depositInvoiceNumber,
+        booking?.id ?? null,
+        depositPaid,
+        verified ? "verified" : bankMatchReady ? "unmatched" : "claimed",
+        matchedTxnId,
+        matchedRef,
+      ]
+    )
+    .catch((e) => console.error("[payments] record failed:", e instanceof Error ? e.message : e))
+
+  const built = await buildInvoiceFromExtraction(x, {
+    bookingId: booking?.id ?? null,
+    threadId: thread.threadId,
+    todayBrisbane: today,
+    kind: "balance",
+  })
+
+  // Use the function category that fits the thread (for playbook voice).
+  const category: Category = "events_beach_house_functions"
+  const playbook = await getPlaybook(category)
+  const instruction = verified
+    ? `The customer says they paid their deposit AND we have CONFIRMED a matching payment in our bank records — so you can warmly confirm we've received it.\n` +
+      `Attached is their BALANCE invoice (${built.invoiceNumber}) for the remaining $${balance.toFixed(2)}, due before the event.\n` +
+      `Drafting rule: warm, short reply. Confirm we've received their deposit with thanks, and that the attached invoice covers the remaining balance payable before the day. Don't re-list every line. A few sentences.`
+    : `The customer says they have PAID their deposit, but we have NOT yet confirmed it landed (a teammate will check the bank).\n` +
+      `Attached is their BALANCE invoice (${built.invoiceNumber}) for the remaining $${balance.toFixed(2)}, due before the event.\n` +
+      `Drafting rule: warm, short reply. Thank them, say we'll confirm the deposit has come through, and that the attached invoice covers the remaining balance payable before the day. Don't claim we've received it yet. Don't re-list every line. A few sentences.`
+  const d = await draft({
+    category,
+    playbook,
+    threadHistory: thread.messages.map(toHistoryItem),
+    customerName: x.customer_name ?? firstName(latest.from),
+    customExtras: [{ role: "user", content: instruction }],
+  })
+  if (!d.body) return await flagDraftFailure(thread, latest, category)
+  if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+  const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
+  await deliver(thread, latest, d, category, playbook, {
+    bcc: INVOICE_BCC,
+    extraAttachments: [
+      {
+        filename: `${built.invoiceNumber} - ${safeName} (Balance).pdf`,
+        contentType: "application/pdf",
+        data: built.pdf,
+      },
+    ],
+  })
+  console.log(
+    `[invoice] balance invoice ${built.invoiceNumber} drafted for thread ${thread.threadId} ($${balance}) — payment ${verified ? "VERIFIED in Xero" : "unverified (human to check)"}`
+  )
+  return true
+}
+
+// Fields a staff member can tweak on the quick-amend form. Everything else
+// (add-ons, booking type) is preserved from the original extraction.
+export interface InvoiceEdits {
+  customer_name?: string
+  customer_email?: string
+  event_type?: string
+  package_name?: string
+  venue_space?: string
+  per_person_price?: number
+  guests?: number
+  event_date?: string // YYYY-MM-DD
+  time_label?: string
+  dietaries?: string
+  deposit_pct?: number
+}
+
+export interface InvoiceRecord {
+  invoice_number: string
+  kind: "standard" | "balance"
+  thread_id: string | null
+  booking_id: number | null
+  customer_name: string | null
+  editable: InvoiceExtraction | null
+}
+
+/** Load an invoice (with its editable detail) for the quick-amend form. */
+export async function getInvoiceForEdit(invoiceNumber: string): Promise<InvoiceRecord | null> {
+  const { rows } = await db().query<InvoiceRecord>(
+    `SELECT invoice_number, kind, thread_id, booking_id, customer_name, editable
+       FROM inbox_invoices WHERE invoice_number = $1 LIMIT 1`,
+    [invoiceNumber]
+  )
+  return rows[0] ?? null
+}
+
+/**
+ * Rebuild an invoice PDF from staff-edited fields and refresh the in-thread
+ * draft so the corrected PDF replaces the old one. The email text is preserved;
+ * only the attachment changes. Returns the new balance/total summary.
+ */
+export async function regenerateInvoiceFromEdits(
+  invoiceNumber: string,
+  edits: InvoiceEdits
+): Promise<{ ok: true; invoiceNumber: string } | { ok: false; error: string }> {
+  const rec = await getInvoiceForEdit(invoiceNumber)
+  if (!rec) return { ok: false, error: "invoice not found" }
+  if (!rec.editable) return { ok: false, error: "this invoice has no stored detail to edit" }
+  if (!rec.thread_id) return { ok: false, error: "invoice is not linked to a thread" }
+  if (!invoiceConfigReady()) return { ok: false, error: "invoice config not set" }
+
+  // Merge edits over the stored extraction (skip blank/unchanged fields).
+  const base = rec.editable
+  const x: InvoiceExtraction = {
+    ...base,
+    customer_name: edits.customer_name ?? base.customer_name,
+    customer_email: edits.customer_email ?? base.customer_email,
+    event_type: edits.event_type ?? base.event_type,
+    package_name: edits.package_name ?? base.package_name,
+    venue_space: edits.venue_space ?? base.venue_space,
+    per_person_price: edits.per_person_price ?? base.per_person_price,
+    guests: edits.guests ?? base.guests,
+    event_date: edits.event_date ?? base.event_date,
+    time_label: edits.time_label ?? base.time_label,
+    dietaries: edits.dietaries ?? base.dietaries,
+    deposit_pct: edits.deposit_pct ?? base.deposit_pct,
+  }
+
+  const thread = await getThread(rec.thread_id)
+  if (!thread.messages.length) return { ok: false, error: "thread not found" }
+  const helloMail = config().HELLO_MAILBOX.toLowerCase()
+  // Reply onto the most recent customer-authored message.
+  let latest = thread.messages[thread.messages.length - 1]!
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    const m = thread.messages[i]!
+    if (!m.from.toLowerCase().includes(helloMail)) {
+      latest = m
+      break
+    }
+  }
+
+  const today = todayBrisbaneStr()
+  const built = await buildInvoiceFromExtraction(x, {
+    bookingId: rec.booking_id,
+    threadId: rec.thread_id,
+    todayBrisbane: today,
+    kind: rec.kind,
+  })
+
+  // If the thread ALSO has the sibling invoice (e.g. the deposit was edited but
+  // a balance invoice was already issued, or vice versa), rebuild it too with
+  // the same corrected numbers so the two never drift apart. The attachment on
+  // the draft is the invoice the staffer was actually editing.
+  const siblingKind = rec.kind === "standard" ? "balance" : "standard"
+  if (await threadHasInvoiceKind(rec.thread_id, siblingKind)) {
+    await buildInvoiceFromExtraction(x, {
+      bookingId: rec.booking_id,
+      threadId: rec.thread_id,
+      todayBrisbane: today,
+      kind: siblingKind,
+    }).catch((e) => console.error("[invoice] sibling rebuild failed:", e instanceof Error ? e.message : e))
+  }
+
+  // Preserve the existing email text; just swap the attachment.
+  const row = await getThreadRow(rec.thread_id)
+  const prevBody = (row?.meta?.["draftBody"] as string | undefined) ?? ""
+  const body =
+    prevBody ||
+    `Hi ${x.customer_name ?? "there"},\n\nPlease find your updated invoice attached.\n\nKind Regards,\nTarte Management`
+  const category = (row?.category as Category | undefined) ?? "events_beach_house_functions"
+  const playbook = await getPlaybook(category)
+  const d: DraftResult = { body, confidence: 0.5, flags: ["needs_human"] }
+  const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
+  const suffix = rec.kind === "balance" ? " (Balance)" : ""
+  await deliver(thread, latest, d, category, playbook, {
+    bcc: INVOICE_BCC,
+    extraAttachments: [
+      {
+        filename: `${built.invoiceNumber} - ${safeName}${suffix}.pdf`,
+        contentType: "application/pdf",
+        data: built.pdf,
+      },
+    ],
+  })
+  console.log(`[invoice] regenerated ${built.invoiceNumber} from staff edits (thread ${rec.thread_id})`)
+  return { ok: true, invoiceNumber: built.invoiceNumber }
+}
+
+/** Archive a copy of every not-yet-archived invoice for a thread to Google
+ * Drive. Called when a drafted invoice reply is actually sent by a human — the
+ * sent copy is the one worth keeping. Idempotent (drive_file_id guards it) and
+ * non-fatal: if Drive isn't authed yet, the rows are left for the hourly sweep
+ * to retry once Chris re-auths. */
+async function archiveThreadInvoicesToDrive(threadId: string): Promise<void> {
+  if (!(await driveReady())) return
+  const { rows } = await db().query<{
+    id: number
+    invoice_number: string
+    customer_name: string | null
+    pdf_bytes: Buffer | null
+  }>(
+    `SELECT id, invoice_number, customer_name, pdf_bytes
+       FROM inbox_invoices
+      WHERE thread_id = $1 AND drive_file_id IS NULL AND pdf_bytes IS NOT NULL`,
+    [threadId]
+  )
+  for (const inv of rows) {
+    try {
+      const name = inv.customer_name ? `${inv.invoice_number} - ${inv.customer_name}.pdf` : `${inv.invoice_number}.pdf`
+      const fileId = await uploadInvoicePdf({ filename: name, bytes: inv.pdf_bytes! })
+      await db().query(
+        `UPDATE inbox_invoices SET drive_file_id = $1, drive_uploaded_at = now() WHERE id = $2`,
+        [fileId, inv.id]
+      )
+      console.log(`[drive] archived invoice ${inv.invoice_number} -> ${fileId}`)
+    } catch (e) {
+      console.error(`[drive] failed to archive invoice ${inv.invoice_number}:`, e instanceof Error ? e.message : e)
+    }
+  }
+}
+
+/** Hourly sweep: retry Drive archival for invoices whose draft has already been
+ * sent by a human but weren't uploaded at the time (e.g. Drive not yet authed).
+ * Scoped to sent_by_human threads so still-pending drafts aren't archived early. */
+export async function sweepInvoiceDriveUploads(): Promise<number> {
+  if (!(await driveReady())) return 0
+  const { rows } = await db().query<{ thread_id: string }>(
+    `SELECT DISTINCT i.thread_id
+       FROM inbox_invoices i
+       JOIN inbox_threads t ON t.thread_id = i.thread_id
+      WHERE i.drive_file_id IS NULL
+        AND i.pdf_bytes IS NOT NULL
+        AND t.state = 'sent_by_human'`
+  )
+  for (const r of rows) await archiveThreadInvoicesToDrive(r.thread_id)
+  return rows.length
 }
 
 /**

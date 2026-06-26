@@ -117,22 +117,55 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     invoice_number: string
     customer_name: string | null
     amount: string
+    kind: string
   }>(
-    `SELECT invoice_number, customer_name, amount FROM inbox_invoices
+    `SELECT invoice_number, customer_name, amount, kind FROM inbox_invoices
       WHERE created_at > now() - interval '24 hours'
+      ORDER BY id DESC`
+  )
+
+  // Payment claims in the last 24h that we couldn't auto-verify in Xero — a
+  // human needs to check the bank before we treat the deposit as received.
+  const payments = await db().query<{
+    invoice_number: string | null
+    amount: string | null
+    status: string
+  }>(
+    `SELECT invoice_number, amount, status FROM inbox_payments
+      WHERE claimed_at > now() - interval '24 hours' AND status <> 'verified'
       ORDER BY id DESC`
   )
 
   const sections: string[] = []
 
-  if (invoices.rows.length) {
+  if (payments.rows.length) {
     sections.push(
-      `💸 Deposit invoices auto-generated — REVIEW the draft + invoice, then send (${invoices.rows.length}):\n` +
-        invoices.rows
+      `🏦 Deposit "paid" — VERIFY in the bank, then send the confirmation draft (${payments.rows.length}):\n` +
+        payments.rows
           .map(
-            (r) =>
-              `  • ${r.invoice_number} — ${r.customer_name ?? "?"} (50% of $${Number(r.amount).toLocaleString("en-AU")})`
+            (p) =>
+              `  • ${p.invoice_number ?? "?"} — $${Number(p.amount ?? 0).toLocaleString("en-AU")} (${
+                p.status === "unmatched" ? "not found in Xero yet" : "Xero check pending"
+              })`
           )
+          .join("\n")
+    )
+  }
+
+  if (invoices.rows.length) {
+    const base = config().PUBLIC_BASE_URL.replace(/\/$/, "")
+    sections.push(
+      `💸 Invoices auto-generated — REVIEW the draft + invoice, then send (${invoices.rows.length}):\n` +
+        invoices.rows
+          .map((r) => {
+            const isBal = r.kind === "balance"
+            const amt = `$${Number(r.amount).toLocaleString("en-AU")}`
+            const desc = isBal ? `balance of ${amt}` : `50% of ${amt}`
+            return (
+              `  • ${r.invoice_number}${isBal ? " (BALANCE)" : ""} — ${r.customer_name ?? "?"} (${desc})\n` +
+              `    Need a tweak? Edit + regenerate: ${base}/invoice/edit?n=${encodeURIComponent(r.invoice_number)}`
+            )
+          })
           .join("\n")
     )
   }

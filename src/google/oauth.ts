@@ -13,7 +13,19 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.readonly",
+  // Per-file Drive access: lets us create a "Tarte Invoices" folder and upload
+  // sent invoice PDFs into it. drive.file only ever touches files the app
+  // created, so it's the minimal scope (no access to the rest of Drive).
+  // Re-authorise at /oauth/google/start after adding.
+  "https://www.googleapis.com/auth/drive.file",
 ]
+
+/** True if the stored Google token was granted the given scope. Lets features
+ * (e.g. Drive upload) no-op gracefully until Chris re-auths with the new scope. */
+export async function googleHasScope(scope: string): Promise<boolean> {
+  const stored = await getTokens("google")
+  return Boolean(stored?.scope?.split(/\s+/).includes(scope))
+}
 
 let cachedClient: OAuth2Client | undefined
 

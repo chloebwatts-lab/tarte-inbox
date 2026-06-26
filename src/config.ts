@@ -59,6 +59,14 @@ const schema = z.object({
     .transform((v) => v.toLowerCase() === "true"),
   INVOICE_NUMBER_PREFIX: z.string().default("TARTE"),
   INVOICE_DEPOSIT_DUE_DAYS: z.coerce.number().default(7),
+
+  // --- Drive archive of sent invoices ---
+  // When an invoice draft is sent by a human, a copy of the PDF is uploaded to
+  // Google Drive. Optional: if a folder ID is given we upload into it; otherwise
+  // the app creates/owns a "Tarte Invoices" folder under the drive.file scope.
+  // Requires re-auth (drive.file scope) at /oauth/google/start.
+  INVOICE_DRIVE_FOLDER_ID: z.string().optional(),
+  INVOICE_DRIVE_FOLDER_NAME: z.string().default("Tarte Invoices"),
 })
 
 export type Config = z.infer<typeof schema>

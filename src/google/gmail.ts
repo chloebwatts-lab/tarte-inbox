@@ -118,6 +118,24 @@ export async function listInboxThreads(
   return (r.data.threads ?? []).map((t) => t.id!).filter(Boolean)
 }
 
+/** Thread IDs currently in the Spam folder (genuine enquiries occasionally
+ * land here — e.g. function requests). */
+export async function listSpamThreads(query = "in:spam newer_than:7d"): Promise<string[]> {
+  const g = await gmail()
+  const r = await g.users.threads.list({ userId: "me", q: query, maxResults: 25 })
+  return (r.data.threads ?? []).map((t) => t.id!).filter(Boolean)
+}
+
+/** Rescue a thread from Spam back into the Inbox (remove SPAM, add INBOX). */
+export async function unspamThread(threadId: string): Promise<void> {
+  const g = await gmail()
+  await g.users.threads.modify({
+    userId: "me",
+    id: threadId,
+    requestBody: { removeLabelIds: ["SPAM"], addLabelIds: ["INBOX"] },
+  })
+}
+
 /** Thread IDs currently carrying a given label (by name). Empty if none. */
 export async function listThreadsByLabel(labelName: string): Promise<string[]> {
   const labels = await loadLabels()

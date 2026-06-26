@@ -5,7 +5,13 @@ import {
   exchangeGoogleCode,
 } from "./google/oauth.js"
 import { xeroAuthUrl, exchangeXeroCallback } from "./xero/client.js"
-import { runTick, progressBookingToInvoice } from "./pipeline.js"
+import {
+  runTick,
+  progressBookingToInvoice,
+  getInvoiceForEdit,
+  regenerateInvoiceFromEdits,
+  type InvoiceEdits,
+} from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
 
 export const app = new Hono()
@@ -201,6 +207,99 @@ app.post("/booking/:id/invoice", async (c) => {
       500
     )
   }
+})
+
+// --- Quick-amend invoice form ---
+// Staff open this (linked from the daily digest) to tweak a field on an
+// auto-generated invoice and regenerate the PDF + in-thread draft. No PDF
+// hand-editing — the totals always recalculate.
+
+const esc = (s: unknown): string =>
+  String(s ?? "").replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch] as string)
+  )
+
+function editForm(invoiceNumber: string, x: Record<string, unknown>, kind: string, msg?: string): string {
+  const field = (label: string, name: string, value: unknown, type = "text"): string =>
+    `<label>${esc(label)}<input type="${type}" name="${name}" value="${esc(value)}"${
+      type === "number" ? ' step="any"' : ""
+    }></label>`
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Edit ${esc(invoiceNumber)}</title>
+<style>
+ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#3a3a3a}
+ h1{font-size:18px;color:#6e8d85} .tag{color:#8a8a8a;font-size:13px}
+ label{display:block;margin:10px 0;font-size:13px;color:#6e8d85}
+ input{display:block;width:100%;box-sizing:border-box;padding:8px;margin-top:3px;font-size:15px;border:1px solid #d9e2df;border-radius:6px;color:#3a3a3a}
+ button{margin-top:16px;background:#6e8d85;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;cursor:pointer}
+ .msg{background:#f3f7f6;border-radius:6px;padding:10px 12px;margin:12px 0}
+ .note{color:#8a8a8a;font-size:12px;margin-top:14px}
+</style>
+<h1>Edit invoice ${esc(invoiceNumber)}</h1>
+<div class="tag">${esc(kind === "balance" ? "Balance invoice" : "Deposit invoice")} — change a field and regenerate. Totals recalculate automatically.</div>
+${msg ? `<div class="msg">${msg}</div>` : ""}
+<form method="post" action="/invoice/edit">
+ <input type="hidden" name="n" value="${esc(invoiceNumber)}">
+ ${field("Customer name", "customer_name", x["customer_name"])}
+ ${field("Customer email", "customer_email", x["customer_email"])}
+ ${field("Event type", "event_type", x["event_type"])}
+ ${field("Package", "package_name", x["package_name"])}
+ ${field("Venue space", "venue_space", x["venue_space"])}
+ ${field("Date (YYYY-MM-DD)", "event_date", x["event_date"])}
+ ${field("Time", "time_label", x["time_label"])}
+ ${field("Guests", "guests", x["guests"], "number")}
+ ${field("Price per person ($)", "per_person_price", x["per_person_price"], "number")}
+ ${field("Deposit %", "deposit_pct", x["deposit_pct"], "number")}
+ ${field("Dietaries", "dietaries", x["dietaries"])}
+ <button type="submit">Regenerate invoice &amp; draft</button>
+</form>
+<div class="note">This rebuilds the PDF and refreshes the draft in the email thread (BCC accounts &amp; Shawna). It does not send — review and send from Gmail as usual.</div>`
+}
+
+app.get("/invoice/edit", async (c) => {
+  const n = c.req.query("n")
+  if (!n) return c.text("missing ?n=<invoice number>", 400)
+  const rec = await getInvoiceForEdit(n)
+  if (!rec) return c.text("invoice not found", 404)
+  if (!rec.editable) return c.text("this invoice has no stored detail to edit", 400)
+  return c.html(editForm(n, rec.editable as unknown as Record<string, unknown>, rec.kind))
+})
+
+app.post("/invoice/edit", async (c) => {
+  const form = await c.req.parseBody()
+  const n = String(form["n"] ?? "")
+  if (!n) return c.text("missing invoice number", 400)
+  const str = (k: string): string | undefined => {
+    const v = form[k]
+    const s = typeof v === "string" ? v.trim() : ""
+    return s === "" ? undefined : s
+  }
+  const num = (k: string): number | undefined => {
+    const s = str(k)
+    if (s === undefined) return undefined
+    const v = Number(s)
+    return Number.isFinite(v) ? v : undefined
+  }
+  const edits: InvoiceEdits = {
+    customer_name: str("customer_name"),
+    customer_email: str("customer_email"),
+    event_type: str("event_type"),
+    package_name: str("package_name"),
+    venue_space: str("venue_space"),
+    event_date: str("event_date"),
+    time_label: str("time_label"),
+    dietaries: str("dietaries"),
+    guests: num("guests"),
+    per_person_price: num("per_person_price"),
+    deposit_pct: num("deposit_pct"),
+  }
+  const result = await regenerateInvoiceFromEdits(n, edits)
+  const rec = await getInvoiceForEdit(result.ok ? result.invoiceNumber : n)
+  const msg = result.ok
+    ? `✅ Regenerated <b>${esc(result.invoiceNumber)}</b> — the updated PDF is now on the draft in Gmail, ready to review and send.`
+    : `⚠️ ${esc(result.error)}`
+  if (!rec) return c.html(`<p>${msg}</p>`)
+  return c.html(editForm(rec.invoice_number, (rec.editable ?? {}) as unknown as Record<string, unknown>, rec.kind, msg))
 })
 
 // --- Playbooks (minimal admin until TK UI lands) ---

@@ -1,8 +1,8 @@
 import { config } from "./config.js"
-import { runTick, runInvoiceRequests } from "./pipeline.js"
+import { runTick, runInvoiceRequests, sweepInvoiceDriveUploads, sweepSpam } from "./pipeline.js"
 import { ingestNbi } from "./nbi/ingest.js"
 import { digestDue, sendDailyDigest } from "./digest.js"
-import { nudgeStaleBookings } from "./followups.js"
+import { nudgeStaleBookings, followUpQuietInfoThreads } from "./followups.js"
 
 let running = false
 let timer: NodeJS.Timeout | undefined
@@ -24,6 +24,8 @@ async function dailyTick(): Promise<void> {
       await xeroKeepalive()
       const { nudged } = await nudgeStaleBookings()
       if (nudged) console.log(`[followups] drafted ${nudged} nudge(s)`)
+      const { nudged: infoNudged } = await followUpQuietInfoThreads()
+      if (infoNudged) console.log(`[followups] drafted ${infoNudged} info follow-up(s)`)
       await sendDailyDigest()
     }
   } catch (e) {
@@ -59,6 +61,19 @@ async function nbiTick(): Promise<void> {
     if (s) console.log(`[calsync] ${s.synced} synced, ${s.removed} removed`)
   } catch (e) {
     console.error("[calsync] error:", e instanceof Error ? e.message : e)
+  }
+  // Retry Drive archival for sent invoices missed at send time (e.g. pre-auth).
+  try {
+    const n = await sweepInvoiceDriveUploads()
+    if (n) console.log(`[drive] swept ${n} sent-invoice thread(s) for archival`)
+  } catch (e) {
+    console.error("[drive] sweep error:", e instanceof Error ? e.message : e)
+  }
+  // Rescue genuine enquiries that landed in Spam (function requests etc.).
+  try {
+    await sweepSpam()
+  } catch (e) {
+    console.error("[spam] sweep error:", e instanceof Error ? e.message : e)
   }
 }
 

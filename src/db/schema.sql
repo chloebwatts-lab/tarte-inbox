@@ -131,6 +131,11 @@ CREATE TABLE IF NOT EXISTS inbox_learnings (
 ALTER TABLE inbox_bookings
   ADD COLUMN IF NOT EXISTS nudged_at timestamptz;
 
+-- One follow-up per thread that received generic function info but went quiet,
+-- asking if we can help get the function booked. Set when that nudge is drafted.
+ALTER TABLE inbox_threads
+  ADD COLUMN IF NOT EXISTS info_followed_up_at timestamptz;
+
 -- Tarte-issued deposit invoices (our own PDF, not Xero). One row per invoice;
 -- the bigserial id forms the human invoice number (PREFIX-YYYY-000123).
 CREATE TABLE IF NOT EXISTS inbox_invoices (
@@ -144,6 +149,40 @@ CREATE TABLE IF NOT EXISTS inbox_invoices (
   description       text,
   created_at        timestamptz NOT NULL DEFAULT now()
 );
+
+-- Keep the generated PDF bytes so we can upload a copy to Google Drive once the
+-- invoice draft is actually sent by a human (detected via edit-capture).
+-- drive_file_id is set after a successful upload so it's idempotent + retryable.
+ALTER TABLE inbox_invoices
+  ADD COLUMN IF NOT EXISTS pdf_bytes         bytea,
+  ADD COLUMN IF NOT EXISTS drive_file_id     text,
+  ADD COLUMN IF NOT EXISTS drive_uploaded_at timestamptz;
+
+-- kind distinguishes the deposit/standard invoice from a later balance invoice
+-- (remaining 50% once the deposit is paid) so the two get separate numbers and
+-- are idempotent independently. editable stores the extracted booking details
+-- so staff can tweak a field and regenerate the PDF (the quick-amend form).
+ALTER TABLE inbox_invoices
+  ADD COLUMN IF NOT EXISTS kind     text NOT NULL DEFAULT 'standard',
+  ADD COLUMN IF NOT EXISTS editable jsonb;
+
+-- Record of guest payment confirmations. A guest tells us they've paid → we
+-- log a 'claimed' row; once a matching bank transaction is found in Xero it
+-- becomes 'verified'; 'unmatched' means we couldn't find it yet (human checks).
+CREATE TABLE IF NOT EXISTS inbox_payments (
+  id                   bigserial PRIMARY KEY,
+  thread_id            text NOT NULL,
+  invoice_number       text,
+  booking_id           bigint REFERENCES inbox_bookings(id) ON DELETE SET NULL,
+  amount               numeric(10,2),
+  status               text NOT NULL DEFAULT 'claimed', -- claimed | verified | unmatched
+  matched_txn_id       text,
+  matched_reference    text,
+  claimed_at           timestamptz NOT NULL DEFAULT now(),
+  verified_at          timestamptz,
+  confirmation_drafted_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS inbox_payments_thread_idx ON inbox_payments(thread_id);
 
 -- One row per daily digest sent, keyed by Brisbane calendar date.
 CREATE TABLE IF NOT EXISTS inbox_digest_log (

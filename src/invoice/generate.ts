@@ -91,6 +91,12 @@ export interface InvoiceInput {
   // When set (e.g. 50), the invoice shows a deposit + balance split and the
   // amount due now is the deposit. When null, the full total is due.
   depositPct?: number | null
+  // "standard" = the deposit/full invoice. "balance" = the remaining amount
+  // once the deposit has been paid; shows "deposit received" + "balance due now".
+  kind?: "standard" | "balance"
+  // For a balance invoice: how much deposit was already paid (subtracted from
+  // the total to show the balance now due).
+  depositPaidAmount?: number | null
   todayBrisbane: string // YYYY-MM-DD
   // Optional explicit due dates (else derived). ISO yyyy-mm-dd or label.
   depositDueLabel?: string
@@ -113,23 +119,26 @@ export interface GeneratedInvoice {
 async function reserveInvoiceNumber(input: InvoiceInput, amount: number): Promise<string> {
   const { prefix } = invoiceConfig()
   const year = input.todayBrisbane.slice(0, 4)
-  // Idempotent by booking OR thread — reuse an existing number rather than
-  // minting a duplicate when a draft is regenerated.
+  const kind = input.kind ?? "standard"
+  // Idempotent by booking OR thread, scoped to this invoice KIND — so the
+  // deposit invoice and a later balance invoice for the same booking each get
+  // their own stable number rather than colliding.
   const existing = await db().query<{ invoice_number: string }>(
     `SELECT invoice_number FROM inbox_invoices
       WHERE invoice_number <> 'PENDING'
+        AND kind = $3
         AND ( ($1::bigint IS NOT NULL AND booking_id = $1)
               OR thread_id = $2 )
       ORDER BY id LIMIT 1`,
-    [input.bookingId, input.threadId]
+    [input.bookingId, input.threadId, kind]
   )
   if (existing.rows[0]) return existing.rows[0].invoice_number
   const desc = input.event?.packageName ?? input.lineItems[0]?.description ?? "Function"
   const { rows } = await db().query<{ id: number }>(
     `INSERT INTO inbox_invoices
-       (invoice_number, booking_id, thread_id, customer_name, customer_email, amount, description)
-     VALUES ('PENDING', $1, $2, $3, $4, $5, $6) RETURNING id`,
-    [input.bookingId, input.threadId, input.customerName, input.customerEmail, amount, desc]
+       (invoice_number, booking_id, thread_id, customer_name, customer_email, amount, description, kind)
+     VALUES ('PENDING', $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [input.bookingId, input.threadId, input.customerName, input.customerEmail, amount, desc, kind]
   )
   const id = rows[0]!.id
   const number = `${prefix}-${year}-${String(id).padStart(5, "0")}`
@@ -177,6 +186,10 @@ export async function generateInvoice(input: InvoiceInput): Promise<GeneratedInv
   const thankyou = await loadImage(undefined, "tarte-thankyou.png")
   const issueDate = new Date(`${input.todayBrisbane}T00:00:00+10:00`)
   const pdf = await renderInvoicePdf({ cfg, input, invoiceNumber, gross, issueDate, logo, thankyou })
+  // Keep the bytes so we can archive a copy to Drive once the draft is sent.
+  await db()
+    .query(`UPDATE inbox_invoices SET pdf_bytes = $1 WHERE invoice_number = $2`, [pdf, invoiceNumber])
+    .catch((e) => console.error("[invoice] failed to persist pdf bytes:", e instanceof Error ? e.message : e))
   return { pdf, invoiceNumber }
 }
 
@@ -246,6 +259,10 @@ export function renderInvoicePdf(p: {
       .fontSize(22)
       .font("Helvetica-Bold")
       .text(cfg.gstRegistered ? "TAX INVOICE" : "INVOICE", R - 220, 50, { width: 220, align: "right" })
+    if (input.kind === "balance") {
+      // Small tag in the gap under the logo (logo ends ~114, rule at 128).
+      doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("BALANCE INVOICE — REMAINING AMOUNT DUE", L, 117)
+    }
     doc.fillColor(MUTED).fontSize(9.5).font("Helvetica")
     doc.text("Invoice", R - 220, 82, { width: 130, align: "right" })
     doc.text("Date", R - 220, 96, { width: 130, align: "right" })
@@ -338,16 +355,32 @@ export function renderInvoicePdf(p: {
       doc.fillColor(opts.sage ? SAGE_DARK : INK).text(val, tX + labelW, y, { width: R - tX - labelW, align: "right" })
       y += opts.size ? opts.size + 8 : 17
     }
-    if (deposit != null) {
-      totalRow(`Deposit (${input.depositPct}%)`, fmtAud(deposit))
-      totalRow("Balance due", fmtAud(balance!))
-    }
-    doc.moveTo(tX, y + 2).lineTo(R, y + 2).lineWidth(1).strokeColor(SAGE).stroke()
-    y += 8
-    totalRow(cfg.gstRegistered ? "Total (incl. GST)" : "Total", fmtAud(total), { bold: true, sage: true, size: 12 })
-    if (cfg.gstRegistered) {
-      doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Includes GST ${fmtAud(gst)}`, tX, y, { width: R - tX, align: "right" })
-      y += 14
+    if (input.kind === "balance") {
+      // Balance invoice: full total, less the deposit already paid, leaving the
+      // remaining amount now due.
+      const paid = input.depositPaidAmount ?? deposit ?? 0
+      const remaining = Math.round((total - paid) * 100) / 100
+      totalRow(cfg.gstRegistered ? "Total (incl. GST)" : "Total", fmtAud(total))
+      totalRow("Deposit received", `- ${fmtAud(paid)}`)
+      doc.moveTo(tX, y + 2).lineTo(R, y + 2).lineWidth(1).strokeColor(SAGE).stroke()
+      y += 8
+      totalRow("Balance due now", fmtAud(remaining), { bold: true, sage: true, size: 12 })
+      if (cfg.gstRegistered) {
+        doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Total includes GST ${fmtAud(gst)}`, tX, y, { width: R - tX, align: "right" })
+        y += 14
+      }
+    } else {
+      if (deposit != null) {
+        totalRow(`Deposit (${input.depositPct}%)`, fmtAud(deposit))
+        totalRow("Balance due", fmtAud(balance!))
+      }
+      doc.moveTo(tX, y + 2).lineTo(R, y + 2).lineWidth(1).strokeColor(SAGE).stroke()
+      y += 8
+      totalRow(cfg.gstRegistered ? "Total (incl. GST)" : "Total", fmtAud(total), { bold: true, sage: true, size: 12 })
+      if (cfg.gstRegistered) {
+        doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Includes GST ${fmtAud(gst)}`, tX, y, { width: R - tX, align: "right" })
+        y += 14
+      }
     }
 
     // ---- Due dates ----

@@ -52,6 +52,97 @@ export async function nudgeStaleBookings(): Promise<{ nudged: number }> {
   return { nudged }
 }
 
+const INFO_FOLLOWUP_AFTER_DAYS = 4
+
+interface QuietInfoThread {
+  thread_id: string
+  category: string
+  customer_name: string | null
+}
+
+/**
+ * Threads that received generic function info (we sent a reply with the pack /
+ * options) but the customer went quiet. After INFO_FOLLOWUP_AFTER_DAYS, draft
+ * ONE warm follow-up asking if there's anything we can do to help get the
+ * function booked. Drafts only — never auto-sent. One per thread (guarded by
+ * info_followed_up_at).
+ */
+export async function followUpQuietInfoThreads(): Promise<{ nudged: number }> {
+  const { rows } = await db().query<QuietInfoThread>(
+    `SELECT t.thread_id, t.category, COALESCE(b.customer_name, '') AS customer_name
+       FROM inbox_threads t
+       LEFT JOIN LATERAL (
+         SELECT customer_name FROM inbox_bookings WHERE thread_id = t.thread_id ORDER BY id DESC LIMIT 1
+       ) b ON true
+      WHERE t.category IN ('events_tea_garden_functions','events_beach_house_functions')
+        AND t.state IN ('sent_by_human','auto_sent')
+        AND t.info_followed_up_at IS NULL
+        AND t.last_processed_at < now() - make_interval(days => $1)
+        AND NOT EXISTS (
+          SELECT 1 FROM inbox_invoices i WHERE i.thread_id = t.thread_id AND i.invoice_number <> 'PENDING'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM inbox_bookings bk WHERE bk.thread_id = t.thread_id
+            AND bk.state IN ('slot_selected','deposit_invoiced','deposit_paid','balance_invoiced','paid','cancelled')
+        )
+      ORDER BY t.last_processed_at
+      LIMIT 5`,
+    [INFO_FOLLOWUP_AFTER_DAYS]
+  )
+  let nudged = 0
+  for (const t of rows) {
+    try {
+      if (await followUpInfoThread(t)) nudged++
+    } catch (e) {
+      console.error(`[followups] info follow-up for ${t.thread_id} failed:`, e instanceof Error ? e.message : e)
+    }
+  }
+  return { nudged }
+}
+
+async function followUpInfoThread(t: QuietInfoThread): Promise<boolean> {
+  const thread = await getThread(t.thread_id)
+  if (!thread.messages.length) return false
+  const helloMail = config().HELLO_MAILBOX.toLowerCase()
+  const latest = thread.messages[thread.messages.length - 1]!
+  // Only nudge when the ball is in the customer's court (we replied last).
+  if (!latest.from.toLowerCase().includes(helloMail)) return false
+  let lastCustomer: ParsedMessage | undefined
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    const m = thread.messages[i]!
+    if (!m.from.toLowerCase().includes(helloMail)) {
+      lastCustomer = m
+      break
+    }
+  }
+  if (!lastCustomer) return false
+
+  const category = (t.category as Category) ?? "events_beach_house_functions"
+  const playbook = await getPlaybook(category)
+  const d = await draft({
+    category,
+    playbook,
+    threadHistory: thread.messages.map((m) => ({
+      from: m.from,
+      date: m.date,
+      text: m.bodyText.slice(0, 2000),
+    })),
+    customerName: t.customer_name || undefined,
+    customExtras: [
+      {
+        role: "user",
+        content:
+          `We sent this customer our function information a few days ago and they haven't replied. Write a SHORT, warm, zero-pressure follow-up (2-3 sentences): check the info reached them, and ask if there's anything we can help with to get their function booked in (e.g. a date, numbers, or any questions). Don't re-attach the pack or repeat all the prices. One light nudge.`,
+      },
+    ],
+  })
+  if (!d.body) return false
+  await deliverNudgeDraft(thread, lastCustomer, d.body)
+  await db().query(`UPDATE inbox_threads SET info_followed_up_at = now() WHERE thread_id = $1`, [t.thread_id])
+  console.log(`[followups] info follow-up drafted for ${t.thread_id} (${category})`)
+  return true
+}
+
 async function nudgeBooking(b: StaleBooking): Promise<boolean> {
   const thread = await getThread(b.thread_id)
   if (!thread.messages.length) return false

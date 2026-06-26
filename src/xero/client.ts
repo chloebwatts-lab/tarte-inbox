@@ -21,6 +21,9 @@ export function xero(): XeroClient {
       "accounting.contacts",
       "accounting.invoices",
       "accounting.settings.read",
+      // Read bank transactions to verify a deposit landed (re-auth needed once
+      // after adding this — until then xeroBankMatchReady() is false).
+      "accounting.transactions.read",
     ],
   })
   return client
@@ -159,6 +162,68 @@ export async function createAuthorisedInvoice(opts: {
   const id = r.body.invoices?.[0]?.invoiceID
   if (!id) throw new Error("xero createInvoices returned no id")
   return id
+}
+
+/** Whether the stored Xero token can read bank transactions yet. False until
+ * Chris re-authorises after the accounting.transactions.read scope was added. */
+export async function xeroBankMatchReady(): Promise<boolean> {
+  const stored = await getTokens("xero")
+  return Boolean(stored?.scope?.split(/\s+/).some((s) => /accounting\.transactions(\.read)?/.test(s)))
+}
+
+export interface MatchedPayment {
+  bankTransactionId: string
+  total: number
+  reference: string
+  date: string
+  contactName: string
+}
+
+/**
+ * Look for an incoming (RECEIVE) bank transaction that matches a deposit: the
+ * amount must equal `amount`, and either the reference contains the invoice
+ * reference or the payer name matches the customer. Best-effort — relies on the
+ * bank feed being reconciled and (ideally) the customer using the invoice
+ * number as their transfer reference. Returns the best match or null.
+ *
+ * NOTE: getBankTransactions only returns reconciled/created bank transactions,
+ * not raw unreconciled statement lines, so a just-arrived payment may not show
+ * until it's reconciled in Xero.
+ */
+export async function findIncomingPayment(opts: {
+  amount: number
+  reference?: string | null
+  customerName?: string | null
+  sinceDays?: number
+}): Promise<MatchedPayment | null> {
+  const { tenantId } = await ensureXeroAuthed()
+  const since = new Date(Date.now() - (opts.sinceDays ?? 45) * 86400_000)
+  const where =
+    `Type=="RECEIVE" AND Date>=DateTime(${since.getUTCFullYear()},${since.getUTCMonth() + 1},${since.getUTCDate()})`
+  const r = await xero().accountingApi.getBankTransactions(tenantId, undefined, where, "Date DESC")
+  const txns = r.body.bankTransactions ?? []
+  const ref = opts.reference?.toLowerCase().trim()
+  const name = opts.customerName?.toLowerCase().trim()
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 0.01
+  let fallback: MatchedPayment | null = null
+  for (const t of txns) {
+    const total = typeof t.total === "number" ? t.total : Number(t.total ?? 0)
+    if (!near(total, opts.amount)) continue
+    const tRef = (t.reference ?? "").toLowerCase()
+    const tName = (t.contact?.name ?? "").toLowerCase()
+    const m: MatchedPayment = {
+      bankTransactionId: t.bankTransactionID ?? "",
+      total,
+      reference: t.reference ?? "",
+      date: t.date ?? "",
+      contactName: t.contact?.name ?? "",
+    }
+    // Strong match: amount + reference (or payer name) line up.
+    if ((ref && tRef.includes(ref)) || (name && tName.includes(name))) return m
+    // Weak match: amount alone — remember it but keep looking for a stronger one.
+    fallback ??= m
+  }
+  return fallback
 }
 
 export async function getInvoiceOnlineUrl(invoiceId: string): Promise<string | undefined> {

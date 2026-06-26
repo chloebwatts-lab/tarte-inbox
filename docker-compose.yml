@@ -34,6 +34,8 @@ services:
       INVOICE_GST_REGISTERED: ${INVOICE_GST_REGISTERED:-true}
       INVOICE_NUMBER_PREFIX: ${INVOICE_NUMBER_PREFIX:-TARTE}
       INVOICE_DEPOSIT_DUE_DAYS: ${INVOICE_DEPOSIT_DUE_DAYS:-14}
+      INVOICE_DRIVE_FOLDER_ID: ${INVOICE_DRIVE_FOLDER_ID:-}
+      INVOICE_DRIVE_FOLDER_NAME: ${INVOICE_DRIVE_FOLDER_NAME:-Tarte Invoices}
     volumes:
       # Outgoing attachments (function packs, menus, etc.) bind-mounted from
       # the host so they survive image rebuilds and can be updated without

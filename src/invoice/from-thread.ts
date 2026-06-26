@@ -5,6 +5,7 @@
 import { anthropic, MODEL } from "../llm/client.js"
 import type { ParsedThread } from "../google/gmail.js"
 import { renderFullThread } from "../lib/thread-text.js"
+import { db } from "../db/pool.js"
 import {
   generateInvoice,
   type LineItem,
@@ -190,11 +191,18 @@ export interface ThreadInvoiceResult extends GeneratedInvoice {
 }
 
 /** Build a full event invoice from an extracted thread. Caller must have
- *  checked invoiceableNow(). */
+ *  checked invoiceableNow(). When kind is "balance", produces the remaining-
+ *  amount invoice (total less the deposit already paid). */
 export async function buildInvoiceFromExtraction(
   x: InvoiceExtraction,
-  opts: { bookingId: number | null; threadId: string; todayBrisbane: string }
+  opts: {
+    bookingId: number | null
+    threadId: string
+    todayBrisbane: string
+    kind?: "standard" | "balance"
+  }
 ): Promise<ThreadInvoiceResult> {
+  const kind = opts.kind ?? "standard"
   const lineItems: LineItem[] = []
   if (x.per_person_price != null && x.guests != null && x.guests > 0) {
     lineItems.push({
@@ -219,6 +227,15 @@ export async function buildInvoiceFromExtraction(
         year: "numeric",
       })
     : undefined
+  const depositPct = x.deposit_pct ?? 50
+  const gross = lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
+  const depositPaid = Math.round((gross * depositPct) / 100 * 100) / 100
+  const balanceNotes = [
+    "Deposit already received — thank you.",
+    "Balance above is the remaining amount due.",
+    "Balance due 2 days prior to the event start time.",
+    "Final numbers and dietaries required 2 days prior to the event.",
+  ]
   const gen = await generateInvoice({
     bookingId: opts.bookingId,
     threadId: opts.threadId,
@@ -233,10 +250,20 @@ export async function buildInvoiceFromExtraction(
       dietaries: x.dietaries ?? undefined,
     },
     lineItems,
-    depositPct: x.deposit_pct ?? 50,
+    kind,
+    depositPct: kind === "balance" ? null : depositPct,
+    depositPaidAmount: kind === "balance" ? depositPaid : null,
     todayBrisbane: opts.todayBrisbane,
-    depositDueLabel: x.event_date ? fmtDue(x.event_date, 14) : undefined,
+    depositDueLabel: kind === "balance" ? undefined : x.event_date ? fmtDue(x.event_date, 14) : undefined,
     totalDueLabel: x.event_date ? fmtDue(x.event_date, 2) : undefined,
+    notes: kind === "balance" ? balanceNotes : undefined,
   })
+  // Persist the editable detail so staff can tweak a field and regenerate.
+  await db()
+    .query(`UPDATE inbox_invoices SET editable = $1 WHERE invoice_number = $2`, [
+      JSON.stringify(x),
+      gen.invoiceNumber,
+    ])
+    .catch((e) => console.error("[invoice] failed to persist editable detail:", e instanceof Error ? e.message : e))
   return { ...gen, extraction: x }
 }
