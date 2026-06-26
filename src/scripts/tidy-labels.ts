@@ -100,7 +100,30 @@ async function main(): Promise<void> {
     }
   }
 
-  if (missing.length) console.log(`\n(agent labels not yet created: ${missing.join(", ")})`)
+  if (missing.length) {
+    console.log(`\nCREATE missing agent labels (${missing.length}):`)
+    for (const name of missing) {
+      const col = COLORS[name]
+      if (apply) {
+        try {
+          await gmail.users.labels.create({
+            userId: "me",
+            requestBody: {
+              name,
+              color: col,
+              labelListVisibility: "labelShow",
+              messageListVisibility: "show",
+            },
+          })
+          console.log(`  ✓ created ${name}${col ? `  -> ${col.backgroundColor}` : ""}`)
+        } catch (e) {
+          console.log(`  ! ${name}  create failed: ${e instanceof Error ? e.message : e}`)
+        }
+      } else {
+        console.log(`  • ${name}${col ? `  -> ${col.backgroundColor}` : ""}`)
+      }
+    }
+  }
   console.log(`\nDone.${apply ? "" : "  Re-run with --apply to make these changes."}\n`)
   process.exit(0)
 }
