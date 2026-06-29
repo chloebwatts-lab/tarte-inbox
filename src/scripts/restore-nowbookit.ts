@@ -5,9 +5,7 @@
 
 import { google } from "googleapis"
 import { ensureGoogleAuthed } from "../google/oauth.js"
-
-const NBI_AUTOMATED_SUBJECT =
-  /\b(new booking|booking (confirmation|confirmed|summary|cancell|amend|reschedul|update|reminder)|daily (booking )?summary|reservation (confirmed|cancelled)|cancellation|no[- ]?show)\b/i
+import { isAutomatedNowBookIt } from "../pipeline.js"
 
 function hdr(headers: { name?: string | null; value?: string | null }[] | undefined, name: string): string {
   return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? ""
@@ -32,8 +30,7 @@ async function main(): Promise<void> {
     const last = msgs[msgs.length - 1]
     const subject = hdr(last?.payload?.headers ?? undefined, "subject")
     const from = hdr(last?.payload?.headers ?? undefined, "from")
-    const automated = NBI_AUTOMATED_SUBJECT.test(subject)
-    if (automated) {
+    if (isAutomatedNowBookIt(from, subject)) {
       console.log(`  – leave (automated): ${subject.slice(0, 55)}`)
       continue
     }

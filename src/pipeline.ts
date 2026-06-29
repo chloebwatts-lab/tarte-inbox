@@ -256,16 +256,27 @@ function isLikelySupplier(from: string): boolean {
   return SUPPLIER_SENDER_PATTERNS.some((p) => p.test(from))
 }
 
-const NBI_AUTOMATED_SUBJECT =
-  /\b(new booking|booking (confirmation|confirmed|summary|cancell|amend|reschedul|update|reminder)|daily (booking )?summary|reservation (confirmed|cancelled)|cancellation|no[- ]?show)\b/i
+// Clearly-automated NBI system subjects ONLY. Deliberately NOT matching
+// "cancellation"/"refund"/"amend" etc. — those appear in real human threads
+// (e.g. "Re: Cancellation refund" from the NBI account manager).
+const NBI_AUTOMATED_SUBJECT = /\b(daily (booking )?summary|new booking|booking confirm(ation|ed))\b/i
+// Bulk/system NBI senders (newsletters, reports, notifications) — archive these.
+const NBI_AUTOMATED_SENDER =
+  /(noreply|no-reply|donotreply|notifications?|marketing|newsletter|news|reports?|bookings?|hello|info)@nowbookit\.com/i
+
+/** True when a nowbookit.com email is an automated/bulk feed (vs a real person
+ *  at NBI). Used to archive only the noise, never a human's reply. */
+export function isAutomatedNowBookIt(from: string, subject: string): boolean {
+  if (!/@nowbookit\.com/i.test(from)) return false
+  return NBI_AUTOMATED_SENDER.test(from) || NBI_AUTOMATED_SUBJECT.test(subject)
+}
 
 function isAutomatedReceipt(from: string, subject: string): boolean {
   const lowerFrom = from.toLowerCase()
   if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(lowerFrom))) return true
-  // NowBookIt: archive ONLY the automated booking notifications/summaries. A
-  // real person at @nowbookit.com (no such subject) stays in the inbox + gets
-  // classified/drafted like any customer — they were being wrongly archived.
-  if (/@nowbookit\.com/i.test(lowerFrom) && NBI_AUTOMATED_SUBJECT.test(subject)) return true
+  // NowBookIt: archive ONLY automated/bulk feeds; a real person at @nowbookit.com
+  // stays in the inbox + gets classified/drafted (they were being wrongly archived).
+  if (isAutomatedNowBookIt(lowerFrom, subject)) return true
   // Receipt subject + a transactional sender prefix (orders@, billing@, etc.).
   // Deliberately excludes info@/support@/service@ — those are commonly human
   // and a real "Question about invoice #123" from one must not be archived.
