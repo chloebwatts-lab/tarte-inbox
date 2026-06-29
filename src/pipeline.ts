@@ -11,6 +11,7 @@ import {
   ensureLabel,
   applyLabel,
   removeLabel,
+  markThreadUnread,
   archiveThread,
   deleteThreadDrafts,
   createInThreadDraft,
@@ -99,6 +100,10 @@ const BALANCE_DAYS_BEFORE_EVENT = 14
 export const ACTION_LABEL = "Tarte / Action needed"
 export const URGENT_LABEL = "Tarte / URGENT"
 export const AUTO_HANDLED_LABEL = "Tarte / Auto-handled"
+// Invoice lifecycle: "created" when an invoice draft is generated, swapped to
+// "sent" once a human actually sends that reply.
+export const INVOICE_CREATED_LABEL = "Tarte / Invoice created"
+export const INVOICE_SENT_LABEL = "Tarte / Invoice sent"
 
 // Only archive LLM-classified noise when the classifier is sure. Regex-matched
 // noreply receipts archive unconditionally.
@@ -518,10 +523,15 @@ export async function processThread(
   // Edit-capture: if the latest message is ours, and we previously drafted, log diff.
   if (fromUs && existing?.last_action === "drafted") {
     await captureEdit(thread, existing.meta)
-    // Staff sent the reply — if it carried an invoice, archive the PDF to Drive.
+    // Staff sent the reply — if it carried an invoice, archive the PDF to Drive
+    // and flip the invoice label from "created" to "sent".
     await archiveThreadInvoicesToDrive(threadId).catch((e) =>
       console.error("[drive] archive-on-send error:", e instanceof Error ? e.message : e)
     )
+    if (await threadHasInvoice(threadId)) {
+      await applyLabel(threadId, INVOICE_SENT_LABEL).catch(() => {})
+      await removeLabel(threadId, INVOICE_CREATED_LABEL).catch(() => {})
+    }
     // Staff replied — their action item is done, clear the flag.
     await removeLabel(threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
@@ -910,7 +920,7 @@ async function deliver(
   d: DraftResult,
   category: Category,
   playbook: Awaited<ReturnType<typeof getPlaybook>>,
-  opts: { extraAttachments?: Attachment[]; bcc?: string[] } = {}
+  opts: { extraAttachments?: Attachment[]; bcc?: string[]; invoiceCreated?: boolean } = {}
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   // Last-line guard: never address a reply to a no-reply / relay sender that
@@ -940,13 +950,19 @@ async function deliver(
     })
     return true
   }
+  // Thread the reply off the LAST message in the conversation (not necessarily
+  // the one we're answering) so Gmail places it at the bottom in order. Replying
+  // In-Reply-To an older message makes Gmail nest the reply mid-thread — the
+  // "out of order" bug. We still address the customer (latest.from).
+  const tail = thread.messages[thread.messages.length - 1] ?? latest
   const ctx = {
     threadId: thread.threadId,
     to: latest.from,
     bcc: opts.bcc,
     subject: latest.subject,
-    inReplyTo: latest.messageIdHeader ?? "",
-    references: latest.references ?? latest.messageIdHeader ?? "",
+    inReplyTo: tail.messageIdHeader ?? latest.messageIdHeader ?? "",
+    references:
+      tail.references ?? tail.messageIdHeader ?? latest.references ?? latest.messageIdHeader ?? "",
   }
   // Only attach default files on our FIRST reply in the thread.
   const defaultAttachments =
@@ -1008,6 +1024,10 @@ async function deliver(
     attachments
   )
   await applyLabel(thread.threadId, ACTION_LABEL)
+  if (opts.invoiceCreated) await applyLabel(thread.threadId, INVOICE_CREATED_LABEL).catch(() => {})
+  // Keep the thread UNREAD so the pending draft surfaces for staff (bold + in
+  // the unread count) rather than being read past.
+  await markThreadUnread(thread.threadId).catch(() => {})
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
@@ -1037,19 +1057,23 @@ export async function deliverNudgeDraft(
   body: string
 ): Promise<void> {
   const helloMail = config().HELLO_MAILBOX
+  // Thread off the conversation tail so the nudge lands at the bottom in order.
+  const tail = thread.messages[thread.messages.length - 1] ?? lastCustomer
   const draftId = await createInThreadDraft(
     {
       threadId: thread.threadId,
       to: lastCustomer.from,
       subject: lastCustomer.subject,
-      inReplyTo: lastCustomer.messageIdHeader ?? "",
-      references: lastCustomer.references ?? lastCustomer.messageIdHeader ?? "",
+      inReplyTo: tail.messageIdHeader ?? lastCustomer.messageIdHeader ?? "",
+      references:
+        tail.references ?? tail.messageIdHeader ?? lastCustomer.references ?? lastCustomer.messageIdHeader ?? "",
     },
     body,
     helloMail,
     "Tarte Team"
   )
   await applyLabel(thread.threadId, ACTION_LABEL)
+  await markThreadUnread(thread.threadId).catch(() => {})
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: thread.messages[thread.messages.length - 1]!.id,
@@ -1235,7 +1259,7 @@ async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessag
   if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   await deliver(thread, latest, d, category, playbook, {
-    bcc: INVOICE_BCC,
+    bcc: INVOICE_BCC, invoiceCreated: true,
     extraAttachments: [
       {
         filename: `${built.invoiceNumber} - ${safeName} (Balance).pdf`,
@@ -1390,7 +1414,7 @@ export async function regenerateInvoiceFromEdits(
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   const suffix = rec.kind === "balance" ? " (Balance)" : ""
   await deliver(thread, latest, d, category, playbook, {
-    bcc: INVOICE_BCC,
+    bcc: INVOICE_BCC, invoiceCreated: true,
     extraAttachments: [
       {
         filename: `${built.invoiceNumber} - ${safeName}${suffix}.pdf`,
@@ -1530,7 +1554,7 @@ async function composeAndDeliverInvoice(
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   await deliver(thread, latest, d, category, playbook, {
     // BCC accounts + Shawna so the sent invoice copies them in (Chris/Shawna).
-    bcc: INVOICE_BCC,
+    bcc: INVOICE_BCC, invoiceCreated: true,
     extraAttachments: [
       {
         filename: `${built.invoiceNumber} - ${safeName}.pdf`,
@@ -1745,7 +1769,7 @@ export async function runInvoiceUpdates(): Promise<{ processed: number }> {
       if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
       const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
       await deliver(thread, customerMsg, d, category, playbook, {
-        bcc: INVOICE_BCC,
+        bcc: INVOICE_BCC, invoiceCreated: true,
         extraAttachments: [
           {
             filename: `${attach.invoiceNumber} - ${safeName}${attach.isBalance ? " (Balance)" : ""}.pdf`,

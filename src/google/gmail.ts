@@ -254,6 +254,17 @@ export async function markThreadRead(threadId: string): Promise<void> {
   })
 }
 
+/** Mark a thread UNREAD so a pending draft surfaces for staff (bold + in the
+ * unread count) instead of being read past. */
+export async function markThreadUnread(threadId: string): Promise<void> {
+  const g = await gmail()
+  await g.users.threads.modify({
+    userId: "me",
+    id: threadId,
+    requestBody: { addLabelIds: ["UNREAD"] },
+  })
+}
+
 // --- Drafts + sends, both in-thread ---
 
 interface ReplyContext {
