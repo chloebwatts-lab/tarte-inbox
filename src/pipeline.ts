@@ -204,7 +204,9 @@ const NOREPLY_SENDER_PATTERNS = [
   /postmaster@/i,
   /bounce/i,
   /@ordermentum\.com/i, // supplier ordering platform, automated only
-  /@nowbookit\.com/i, // booking confirmations, automated only
+  // NOTE: nowbookit.com is NOT blanket-archived here — a real person (e.g. the
+  // NBI account manager) emails from @nowbookit.com and was disappearing. Only
+  // the automated NBI notifications are archived, gated by subject below.
   /alerts?@/i,
   /automated@/i,
   /system@/i,
@@ -254,9 +256,16 @@ function isLikelySupplier(from: string): boolean {
   return SUPPLIER_SENDER_PATTERNS.some((p) => p.test(from))
 }
 
+const NBI_AUTOMATED_SUBJECT =
+  /\b(new booking|booking (confirmation|confirmed|summary|cancell|amend|reschedul|update|reminder)|daily (booking )?summary|reservation (confirmed|cancelled)|cancellation|no[- ]?show)\b/i
+
 function isAutomatedReceipt(from: string, subject: string): boolean {
   const lowerFrom = from.toLowerCase()
   if (NOREPLY_SENDER_PATTERNS.some((p) => p.test(lowerFrom))) return true
+  // NowBookIt: archive ONLY the automated booking notifications/summaries. A
+  // real person at @nowbookit.com (no such subject) stays in the inbox + gets
+  // classified/drafted like any customer — they were being wrongly archived.
+  if (/@nowbookit\.com/i.test(lowerFrom) && NBI_AUTOMATED_SUBJECT.test(subject)) return true
   // Receipt subject + a transactional sender prefix (orders@, billing@, etc.).
   // Deliberately excludes info@/support@/service@ — those are commonly human
   // and a real "Question about invoice #123" from one must not be archived.
