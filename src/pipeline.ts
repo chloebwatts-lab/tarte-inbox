@@ -505,9 +505,9 @@ async function handleFormSubmission(
 ): Promise<boolean> {
   // Duplicate-submission guard: customers often submit the website form twice
   // (or follow up while staff are already replying on a parallel thread). If
-  // WE have emailed this customer in the last few days, don't draft another
+  // WE have emailed this customer in the last two weeks, don't draft another
   // reply — label it so staff can eyeball, and note why (Paula Ajani case).
-  if (await recentlyRepliedTo(form.email, 5).catch(() => false)) {
+  if (await recentlyRepliedTo(form.email, 14).catch(() => false)) {
     await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
       thread_id: thread.threadId,
@@ -518,7 +518,7 @@ async function handleFormSubmission(
         formSubmission: true,
         formEmail: form.email,
         duplicateSkipped: true,
-        note: "Form submission from a customer we already replied to in the last 5 days — no draft created (likely duplicate).",
+        note: "Form submission from a customer we already replied to in the last 14 days — no draft created (likely duplicate).",
       },
     })
     console.log(`[pipeline] form from ${form.email} skipped — already replied recently (likely duplicate)`)
