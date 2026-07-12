@@ -293,9 +293,27 @@ async function maybeHandleTakeawayOrder(
 }
 
 /**
+ * Staff DELETING a thread means "we're not responding to this" — the agent
+ * must fully back off: remove our pending draft, drop the action flag, and
+ * mark the thread dismissed so no sweep or digest resurrects it.
+ */
+export async function dismissTrashedThread(threadId: string): Promise<void> {
+  await deleteThreadDrafts(threadId).catch(() => {})
+  await removeLabel(threadId, ACTION_LABEL).catch(() => {})
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: "dismissed",
+    state: "dismissed_by_staff",
+    last_action: "dismissed_trash",
+  })
+  console.log(`[pipeline] thread ${threadId} deleted by staff — dismissed, draft removed`)
+}
+
+/**
  * Hourly: threads with a pending draft must stay UNREAD until staff action
  * them — a girl opening one (or Gmail syncing a phone) marks it read and it
  * blends back in. Re-assert unread while the draft is still sitting there.
+ * Deleted (trashed) threads are the exception: staff dismissed them, back off.
  */
 export async function reassertDraftUnread(): Promise<number> {
   const { rows } = await db().query<{ thread_id: string }>(
@@ -308,6 +326,10 @@ export async function reassertDraftUnread(): Promise<number> {
   for (const r of rows) {
     try {
       const s = await threadDraftReadState(r.thread_id)
+      if (s.trashed) {
+        await dismissTrashedThread(r.thread_id)
+        continue
+      }
       if (s.hasDraft && !s.unread) {
         await markThreadUnread(r.thread_id)
         fixed++
@@ -692,6 +714,12 @@ export async function processThread(
 ): Promise<boolean> {
   const thread = await getThread(threadId)
   if (!thread.messages.length) return false
+  // Staff deleted it → they've decided not to respond. Back off entirely
+  // (no classify, no draft, no labels) and clean up anything we left on it.
+  if (thread.messages[thread.messages.length - 1]!.labelIds.includes("TRASH")) {
+    await dismissTrashedThread(threadId)
+    return false
+  }
   // When forced, pretend the latest customer message is the one to reply to
   // — even if our team has already replied. Used for /thread/:id/redraft so
   // we can test the agent's drafting after a prompt change without waiting

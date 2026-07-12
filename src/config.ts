@@ -79,8 +79,9 @@ const schema = z.object({
   TAKEAWAY_REMINDER_CALENDAR_ID: z.string().default("shawna@tarte.com.au"),
 
   // Watchdog alert recipients (comma-separated). Alerts are written so the fix
-  // is doable from a phone (re-auth links etc.).
-  ALERT_EMAILS: z.string().default("hello@tarte.com.au,accounts@tarte.com.au"),
+  // is doable from a phone (re-auth links etc.). Chris = chloe@, plus Shawna
+  // and the shared hello@ mailbox (per Chris 2026-07-12).
+  ALERT_EMAILS: z.string().default("hello@tarte.com.au,chloe@tarte.com.au,shawna@tarte.com.au"),
 })
 
 export type Config = z.infer<typeof schema>

@@ -258,13 +258,18 @@ export async function markThreadRead(threadId: string): Promise<void> {
  * by the hourly sweep that keeps drafted threads bold until actioned. */
 export async function threadDraftReadState(
   threadId: string
-): Promise<{ hasDraft: boolean; unread: boolean }> {
+): Promise<{ hasDraft: boolean; unread: boolean; trashed: boolean }> {
   const g = await gmail()
   const r = await g.users.threads.get({ userId: "me", id: threadId, format: "minimal" })
   const msgs = r.data.messages ?? []
+  const real = msgs.filter((m) => !(m.labelIds ?? []).includes("DRAFT"))
+  const latest = real[real.length - 1]
   return {
     hasDraft: msgs.some((m) => (m.labelIds ?? []).includes("DRAFT")),
     unread: msgs.some((m) => (m.labelIds ?? []).includes("UNREAD")),
+    // Staff deleting a thread means "we're not responding" — the agent must
+    // back off it completely rather than keep resurfacing it.
+    trashed: (latest?.labelIds ?? []).includes("TRASH"),
   }
 }
 

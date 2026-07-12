@@ -7,7 +7,13 @@ import { draft } from "./llm/drafter.js"
 import { getPlaybook } from "./db/queries.js"
 import { db } from "./db/pool.js"
 import { config } from "./config.js"
-import { deliverNudgeDraft } from "./pipeline.js"
+import { deliverNudgeDraft, dismissTrashedThread } from "./pipeline.js"
+
+/** Staff deleted the thread → never nudge it. */
+function isTrashed(thread: { messages: Array<{ labelIds: string[] }> }): boolean {
+  const latest = thread.messages[thread.messages.length - 1]
+  return Boolean(latest?.labelIds.includes("TRASH"))
+}
 import type { Category } from "./llm/classifier.js"
 
 const NUDGE_AFTER_DAYS = 3
@@ -103,6 +109,12 @@ export async function followUpQuietInfoThreads(): Promise<{ nudged: number }> {
 async function followUpInfoThread(t: QuietInfoThread): Promise<boolean> {
   const thread = await getThread(t.thread_id)
   if (!thread.messages.length) return false
+  if (isTrashed(thread)) {
+    // Deleted by staff — stamp the once-flag so it never re-selects.
+    await db().query(`UPDATE inbox_threads SET info_followed_up_at = now() WHERE thread_id = $1`, [t.thread_id])
+    await dismissTrashedThread(t.thread_id).catch(() => {})
+    return false
+  }
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
   const latest = thread.messages[thread.messages.length - 1]!
   // Only nudge when the ball is in the customer's court (we replied last).
@@ -146,6 +158,12 @@ async function followUpInfoThread(t: QuietInfoThread): Promise<boolean> {
 async function nudgeBooking(b: StaleBooking): Promise<boolean> {
   const thread = await getThread(b.thread_id)
   if (!thread.messages.length) return false
+  if (isTrashed(thread)) {
+    // Deleted by staff — never nudge; stamp nudged_at so it stops re-selecting.
+    await db().query(`UPDATE inbox_bookings SET nudged_at = now() WHERE id = $1`, [b.id])
+    await dismissTrashedThread(b.thread_id).catch(() => {})
+    return false
+  }
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
   const latest = thread.messages[thread.messages.length - 1]!
 
