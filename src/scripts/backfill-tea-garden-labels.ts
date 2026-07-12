@@ -9,8 +9,10 @@ import { ensureGoogleAuthed } from "../google/oauth.js"
 
 const TG_LABELS = ["Events / Tea Garden - High Tea", "Events / Tea Garden - Functions"]
 const TG_RE = /\btea ?garden\b|\bhigh ?tea\b/i
-// Don't label pure system noise (NBI daily summaries mention high teas daily).
-const SKIP_FROM = /nowbookit\.com|no-?reply@|mailer|postmaster|squarespace\.com/i
+// Don't label pure system noise (NBI daily summaries mention high teas daily)
+// or marketing/cold senders that merely mention high tea.
+const SKIP_FROM =
+  /nowbookit\.com|no-?reply@|mailer|postmaster|squarespace\.com|highteasociety|hospitality suppliers expo|@send\./i
 
 function hdr(m: gmail_v1.Schema$Message | undefined, name: string): string {
   return m?.payload?.headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? ""
