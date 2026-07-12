@@ -73,6 +73,10 @@ const schema = z.object({
   // the rest just works. If unset, the pages are closed (403) — set it to
   // enable password-free access. Keep it long + random.
   INVOICE_PORTAL_TOKEN: z.string().optional(),
+
+  // Where takeaway-high-tea pickup reminders are created. Defaults to the
+  // staff shared calendar (hello@ has writer access to it).
+  TAKEAWAY_REMINDER_CALENDAR_ID: z.string().default("shawna@tarte.com.au"),
 })
 
 export type Config = z.infer<typeof schema>

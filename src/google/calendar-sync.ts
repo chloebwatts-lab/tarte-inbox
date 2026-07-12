@@ -89,12 +89,21 @@ function nbiEventId(ref: string): string {
   return `nbi${ref.toLowerCase().replace(/[^a-v0-9]/g, "")}`
 }
 
+// The sync runs hourly but most events never change — writing them all every
+// run was blowing the Calendar API quota ("Rate Limit Exceeded" spam) and
+// starving other calendar work. Remember what we last wrote per event id and
+// skip identical payloads. In-memory: a container restart just re-syncs once.
+const lastWritten = new Map<string, string>()
+const deletedIds = new Set<string>()
+
 async function upsertEvent(
   c: calendar_v3.Calendar,
   calendarId: string,
   id: string,
   body: calendar_v3.Schema$Event
 ): Promise<void> {
+  const payload = JSON.stringify(body)
+  if (lastWritten.get(id) === payload) return
   try {
     await c.events.insert({ calendarId, requestBody: { ...body, id } })
   } catch (e) {
@@ -108,6 +117,8 @@ async function upsertEvent(
       throw e
     }
   }
+  lastWritten.set(id, payload)
+  deletedIds.delete(id)
 }
 
 async function deleteEvent(
@@ -115,11 +126,16 @@ async function deleteEvent(
   calendarId: string,
   id: string
 ): Promise<void> {
+  // Skip if we already deleted it this process — most "deletes" every hour
+  // were for restaurant covers that never existed on the calendar at all.
+  if (deletedIds.has(id)) return
   try {
     await c.events.delete({ calendarId, eventId: id })
   } catch {
     // already gone — fine
   }
+  deletedIds.add(id)
+  lastWritten.delete(id)
 }
 
 export async function syncCombinedCalendar(): Promise<{

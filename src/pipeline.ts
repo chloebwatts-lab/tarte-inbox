@@ -16,6 +16,9 @@ import {
   deleteThreadDrafts,
   createInThreadDraft,
   createStandaloneDraft,
+  createStandaloneDraftWithThread,
+  recentlyRepliedTo,
+  threadDraftReadState,
   sendInThreadReply,
   findOurSentReply,
   createForwardDraft,
@@ -25,7 +28,7 @@ import {
   type ParsedThread,
   type ParsedMessage,
 } from "./google/gmail.js"
-import { isSlotFree, createEvent, eventsOnDate, type Venue } from "./google/calendar.js"
+import { isSlotFree, createEvent, eventsOnDate, upsertReminderEvent, type Venue } from "./google/calendar.js"
 import { driveReady, uploadInvoicePdf } from "./google/drive.js"
 import {
   fetchCustomerHistory,
@@ -104,6 +107,9 @@ export const AUTO_HANDLED_LABEL = "Tarte / Auto-handled"
 // "sent" once a human actually sends that reply.
 export const INVOICE_CREATED_LABEL = "Tarte / Invoice created"
 export const INVOICE_SENT_LABEL = "Tarte / Invoice sent"
+// Squarespace takeaway high tea orders — labelled + a pickup reminder goes on
+// the staff calendar so the kitchen preps for the date.
+export const TAKEAWAY_HT_LABEL = "Tarte / Takeaway High Tea"
 
 // Only archive LLM-classified noise when the classifier is sure. Regex-matched
 // noreply receipts archive unconditionally.
@@ -174,6 +180,117 @@ export async function sweepSpam(): Promise<{ scanned: number; rescued: number }>
   }
   if (rescued) console.log(`[spam] swept ${scanned}, rescued ${rescued}`)
   return { scanned, rescued }
+}
+
+// --- Squarespace takeaway high tea orders ---
+// Order notifications come from no-reply@squarespace.com ("Tarte.: A New Order
+// has Arrived (02846)"). When the items include a high tea and there's a
+// requested pickup date, label the thread and put a pickup reminder on the
+// staff calendar so the kitchen preps for it.
+
+const SQUARESPACE_ORDER_FROM = /no-reply@squarespace\.com/i
+const SQUARESPACE_ORDER_SUBJECT = /new order has arrived \((\d+)\)/i
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+}
+
+async function maybeHandleTakeawayOrder(
+  thread: ParsedThread,
+  latest: ParsedMessage
+): Promise<boolean> {
+  if (!SQUARESPACE_ORDER_FROM.test(latest.from)) return false
+  const subj = latest.subject.match(SQUARESPACE_ORDER_SUBJECT)
+  if (!subj) return false
+  const orderNo = subj[1]!
+  const text = latest.bodyText
+  // Only takeaway HIGH TEA orders get the label + reminder; plain bakery/gift
+  // card orders fall through to the normal automated-receipt archive.
+  if (!/high ?tea/i.test(text)) return false
+
+  // "Requested Pickup Date: 12/Jul Sunday." (+ optional "... Pickup Time: 07:00")
+  const dateM = text.match(/Requested Pickup Date:?\s*(\d{1,2})\s*\/\s*([A-Za-z]{3,9})/i)
+  const timeM = text.match(/Requested Pickup Time:?\s*(\d{1,2}):(\d{2})/i)
+  // Customer name sits after BILLED TO (optionally PICKUP OPTION), before the
+  // street number of the address.
+  const nameM = text.match(/BILLED TO:?\s*(?:PICKUP OPTION:?\s*)?([A-Za-z][A-Za-z' .-]*?)(?=\s+\d)/i)
+  const customer = nameM?.[1]?.trim() ?? "Customer"
+
+  let dateStr: string | undefined
+  if (dateM) {
+    const day = Number(dateM[1])
+    const mon = MONTHS[dateM[2]!.slice(0, 3).toLowerCase()]
+    if (mon) {
+      const todayB = todayBrisbaneStr() // YYYY-MM-DD
+      let year = Number(todayB.slice(0, 4))
+      const candidate = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+      // If that date is more than 30 days in the past, it must mean next year.
+      if (candidate < todayB) {
+        const past = (Date.parse(todayB) - Date.parse(candidate)) / 86400_000
+        if (past > 30) year += 1
+      }
+      dateStr = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+    }
+  }
+
+  await applyLabel(thread.threadId, TAKEAWAY_HT_LABEL).catch(() => {})
+  if (dateStr) {
+    const time = timeM ? `${timeM[1]!.padStart(2, "0")}:${timeM[2]}` : undefined
+    try {
+      await upsertReminderEvent({
+        calendarId: config().TAKEAWAY_REMINDER_CALENDAR_ID,
+        id: `sqorder${orderNo}`,
+        summary: `TAKEAWAY HIGH TEA PICKUP — ${customer}${time ? ` ${time}` : ""} (order #${orderNo})`,
+        description: `Squarespace order #${orderNo} — takeaway high tea pickup.\nCustomer: ${customer}\n(Auto-created from the order email.)`,
+        date: dateStr,
+        startTime: time,
+      })
+      console.log(`[takeaway] order #${orderNo} (${customer}) — reminder on ${dateStr}${time ? ` ${time}` : ""}`)
+    } catch (e) {
+      console.error(`[takeaway] reminder for order #${orderNo} failed:`, e instanceof Error ? e.message : e)
+      await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    }
+  } else {
+    // No pickup date found — flag so a human adds the reminder manually.
+    await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    console.warn(`[takeaway] order #${orderNo} — no pickup date parsed, flagged`)
+  }
+  await upsertThread({
+    thread_id: thread.threadId,
+    last_message_id: latest.id,
+    state: "classified",
+    last_action: "takeaway_ht_order",
+    meta: { takeawayOrder: orderNo, pickupDate: dateStr ?? null, customer },
+  })
+  return true
+}
+
+/**
+ * Hourly: threads with a pending draft must stay UNREAD until staff action
+ * them — a girl opening one (or Gmail syncing a phone) marks it read and it
+ * blends back in. Re-assert unread while the draft is still sitting there.
+ */
+export async function reassertDraftUnread(): Promise<number> {
+  const { rows } = await db().query<{ thread_id: string }>(
+    `SELECT thread_id FROM inbox_threads
+      WHERE state IN ('drafted','form_drafted')
+        AND last_processed_at > now() - interval '21 days'
+      ORDER BY last_processed_at DESC LIMIT 40`
+  )
+  let fixed = 0
+  for (const r of rows) {
+    try {
+      const s = await threadDraftReadState(r.thread_id)
+      if (s.hasDraft && !s.unread) {
+        await markThreadUnread(r.thread_id)
+        fixed++
+      }
+    } catch {
+      /* thread gone — ignore */
+    }
+  }
+  if (fixed) console.log(`[unread] re-marked ${fixed} drafted thread(s) unread`)
+  return fixed
 }
 
 const HANDOFF_ADDRESSES = ["shawna@tarte.com.au"] // forwards to these = humans will handle, agent backs off
@@ -386,6 +503,27 @@ async function handleFormSubmission(
   latest: ParsedMessage,
   form: FormSubmission
 ): Promise<boolean> {
+  // Duplicate-submission guard: customers often submit the website form twice
+  // (or follow up while staff are already replying on a parallel thread). If
+  // WE have emailed this customer in the last few days, don't draft another
+  // reply — label it so staff can eyeball, and note why (Paula Ajani case).
+  if (await recentlyRepliedTo(form.email, 5).catch(() => false)) {
+    await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: thread.threadId,
+      last_message_id: latest.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: {
+        formSubmission: true,
+        formEmail: form.email,
+        duplicateSkipped: true,
+        note: "Form submission from a customer we already replied to in the last 5 days — no draft created (likely duplicate).",
+      },
+    })
+    console.log(`[pipeline] form from ${form.email} skipped — already replied recently (likely duplicate)`)
+    return true
+  }
   const result = await classify(form.subject, form.email, form.message)
   await applyLabel(thread.threadId, CATEGORY_LABELS[result.category])
 
@@ -617,6 +755,16 @@ export async function processThread(
   const label = CATEGORY_LABELS[result.category]
   await applyLabel(threadId, label)
 
+  // Overlay rule (staff request): ANYTHING tea-garden related also carries the
+  // Tea Garden label so it groups visually — even when routing-wise it's an
+  // existing-booking change or general enquiry. Label only; routing unchanged.
+  if (
+    !result.category.startsWith("events_tea_garden") &&
+    /\btea ?garden\b|\bhigh ?tea\b/i.test(latest.subject + " " + cleanLatestBody)
+  ) {
+    await applyLabel(threadId, CATEGORY_LABELS.events_tea_garden_high_tea).catch(() => {})
+  }
+
   await upsertThread({
     thread_id: threadId,
     last_message_id: latest.id,
@@ -692,6 +840,11 @@ export async function processThread(
     })
     return true
   }
+
+  // Squarespace TAKEAWAY HIGH TEA orders: label + pickup reminder on the staff
+  // calendar. Must run before the automated-receipt archive below (the order
+  // email comes from no-reply@squarespace.com).
+  if (await maybeHandleTakeawayOrder(thread, latest)) return true
 
   // Automated notification (noreply, order confirmation, statement, etc).
   // No human at the other end — label, archive out of the inbox.
@@ -1345,6 +1498,98 @@ export async function listInvoices(): Promise<InvoiceListRow[]> {
   return rows
 }
 
+/**
+ * Manually create a brand-new invoice from staff-entered fields (the
+ * /invoice/new form) — no email thread required. Generates the branded PDF,
+ * creates a standalone DRAFT to the customer with it attached (BCC accounts +
+ * Shawna), links the invoice to the new draft's thread so on-send capture,
+ * Drive archive and the edit form all work, and labels it.
+ */
+export async function createManualInvoice(fields: {
+  customer_name: string
+  customer_email: string
+  event_type?: string
+  package_name?: string
+  venue_space?: string
+  event_date?: string
+  time_label?: string
+  guests?: number
+  per_person_price?: number
+  deposit_pct?: number
+  dietaries?: string
+}): Promise<{ ok: true; invoiceNumber: string } | { ok: false; error: string }> {
+  if (!invoiceConfigReady()) return { ok: false, error: "invoice config not set" }
+  if (!fields.customer_name || !fields.customer_email)
+    return { ok: false, error: "customer name and email are required" }
+  const hasMoney = (fields.per_person_price ?? 0) > 0 && (fields.guests ?? 0) > 0
+  if (!hasMoney) return { ok: false, error: "guests and price per person are required" }
+
+  const x: InvoiceExtraction = {
+    booking_type: "private_hire",
+    customer_confirmed: true,
+    ready_to_invoice: true,
+    customer_name: fields.customer_name,
+    customer_email: fields.customer_email,
+    event_type: fields.event_type ?? null,
+    package_name: fields.package_name ?? null,
+    venue_space: fields.venue_space ?? null,
+    per_person_price: fields.per_person_price ?? null,
+    guests: fields.guests ?? null,
+    event_date: fields.event_date ?? null,
+    time_label: fields.time_label ?? null,
+    dietaries: fields.dietaries ?? null,
+    deposit_pct: fields.deposit_pct ?? 50,
+    add_ons: [],
+    confidence: 1,
+    missing: [],
+  }
+  const today = todayBrisbaneStr()
+  const built = await buildInvoiceFromExtraction(x, {
+    bookingId: null,
+    threadId: "",
+    todayBrisbane: today,
+    kind: "standard",
+  })
+  const deposit = Math.round(((fields.per_person_price! * fields.guests! * (fields.deposit_pct ?? 50)) / 100) * 100) / 100
+  const firstNameOnly = fields.customer_name.split(/\s+/)[0]
+  const body =
+    `Hi ${firstNameOnly},\n\n` +
+    `Thank you for booking with us${fields.event_date ? ` for ${fields.event_date}` : ""} — please find your deposit invoice attached. ` +
+    `Paying the ${fields.deposit_pct ?? 50}% deposit ($${deposit.toFixed(2)}) secures your date, and final numbers and dietaries can be confirmed closer to the day.\n\n` +
+    `Kind Regards,\nTarte Management`
+  const safeName = fields.customer_name.replace(/[^A-Za-z0-9 ]/g, "").trim()
+  const { threadId } = await createStandaloneDraftWithThread(
+    fields.customer_email,
+    `Your booking with Tarte${fields.event_date ? ` — ${fields.event_date}` : ""}`,
+    body,
+    config().HELLO_MAILBOX,
+    "Tarte Team",
+    [
+      {
+        filename: `${built.invoiceNumber} - ${safeName}.pdf`,
+        contentType: "application/pdf",
+        data: built.pdf,
+      },
+    ],
+    INVOICE_BCC
+  )
+  await db().query(`UPDATE inbox_invoices SET thread_id = $1 WHERE invoice_number = $2`, [
+    threadId,
+    built.invoiceNumber,
+  ])
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: "manual_invoice",
+    state: "drafted",
+    last_action: "drafted",
+    meta: { manualInvoice: true, invoiceNumber: built.invoiceNumber },
+  })
+  await applyLabel(threadId, INVOICE_CREATED_LABEL).catch(() => {})
+  await applyLabel(threadId, ACTION_LABEL).catch(() => {})
+  console.log(`[invoice] manually created ${built.invoiceNumber} for ${fields.customer_email} (thread ${threadId})`)
+  return { ok: true, invoiceNumber: built.invoiceNumber }
+}
+
 /** Load an invoice (with its editable detail) for the quick-amend form. */
 export async function getInvoiceForEdit(invoiceNumber: string): Promise<InvoiceRecord | null> {
   const { rows } = await db().query<InvoiceRecord>(
@@ -1519,6 +1764,8 @@ async function maybeAutoInvoice(
     weekday: "long",
   }).format(new Date())
   const x = await extractInvoiceDetails(thread, today, weekday)
+  // From-header fallback — the address is often only in the headers.
+  if (!x.customer_email) x.customer_email = extractEmail(latest.from) || null
   if (!invoiceableNow(x)) return false
   return await composeAndDeliverInvoice(thread, latest, category, x, today)
 }
@@ -1620,12 +1867,17 @@ export async function runInvoiceRequests(): Promise<{ processed: number }> {
       const existingRow = await getThreadRow(id)
       const category = ((existingRow?.category as Category) ?? "events_tea_garden_functions")
       if (await threadHasInvoice(id)) {
-        // Already invoiced — just clear the label.
+        // Already invoiced — staff applying Make-Invoice again means they want
+        // it REBUILT with the latest thread details (used to silently no-op,
+        // which read as "invoice creation isn't working").
+        await processInvoiceRebuild(id)
         await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
         processed++
         continue
       }
       const x = await extractInvoiceDetails(thread, today, weekday)
+      // From-header fallback — the address is often only in the headers.
+      if (!x.customer_email) x.customer_email = extractEmail(customerMsg.from) || null
       if (manuallyInvoiceable(x)) {
         await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
       } else {
@@ -1663,146 +1915,157 @@ export async function runInvoiceRequests(): Promise<{ processed: number }> {
 // Entirely Gmail-native — no website needed.
 export const UPDATE_INVOICE_LABEL = "Tarte / Update Invoice"
 
+/**
+ * Build-or-rebuild the invoice(s) for one thread from its latest agreed
+ * details. Shared by the Update-Invoice label, the Make-Invoice label when an
+ * invoice already exists (staff expect a refresh, not a silent no-op), and
+ * one-off ops. Returns what happened.
+ */
+export async function processInvoiceRebuild(
+  id: string
+): Promise<"rebuilt" | "built" | "unmet" | "empty"> {
+  const today = todayBrisbaneStr()
+  const weekday = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "long",
+  }).format(new Date())
+  const thread = await getThread(id)
+  if (!thread.messages.length) return "empty"
+  const helloMail = config().HELLO_MAILBOX.toLowerCase()
+  let customerMsg = thread.messages[thread.messages.length - 1]!
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    if (!thread.messages[i]!.from.toLowerCase().includes(helloMail)) {
+      customerMsg = thread.messages[i]!
+      break
+    }
+  }
+  const existingRow = await getThreadRow(id)
+  const category = (existingRow?.category as Category) ?? "events_tea_garden_functions"
+
+  // Which invoice kinds already exist on this thread?
+  const kindsRes = await db().query<{ kind: "standard" | "balance" }>(
+    `SELECT DISTINCT kind FROM inbox_invoices WHERE thread_id = $1 AND invoice_number <> 'PENDING'`,
+    [id]
+  )
+  const kinds = kindsRes.rows.map((r) => r.kind)
+
+  const x = await extractInvoiceDetails(thread, today, weekday)
+  // The customer's address lives in the From header, not always in the body
+  // text the extractor reads — don't let a missing body email block invoicing.
+  if (!x.customer_email) x.customer_email = extractEmail(customerMsg.from) || null
+
+  // No invoice yet → build the first one.
+  if (kinds.length === 0) {
+    if (manuallyInvoiceable(x)) {
+      await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
+      return "built"
+    }
+    await applyLabel(id, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: id,
+      last_message_id: thread.messages[thread.messages.length - 1]!.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: {
+        invoiceUpdateUnmet: true,
+        missing: x.missing,
+        note: "Invoice requested but couldn't auto-build — add the missing details (price, date, numbers) to the thread and re-apply the label.",
+      },
+    })
+    console.warn(`[invoice] build on ${id} unmet — missing: ${x.missing.join(", ")}`)
+    return "unmet"
+  }
+
+  // Need usable numbers to rebuild a correct invoice.
+  if (!manuallyInvoiceable(x)) {
+    await applyLabel(id, ACTION_LABEL).catch(() => {})
+    await upsertThread({
+      thread_id: id,
+      last_message_id: thread.messages[thread.messages.length - 1]!.id,
+      state: "classified",
+      last_action: "labeled",
+      meta: {
+        invoiceUpdateUnmet: true,
+        missing: x.missing,
+        note: "Invoice update requested but the new details aren't clear in the thread. State the change (e.g. new guest count) in the thread, then re-apply the label.",
+      },
+    })
+    console.warn(`[invoice] update on ${id} unmet — missing: ${x.missing.join(", ")}`)
+    return "unmet"
+  }
+
+  const booking = await getBookingByThread(id)
+  // Rebuild every existing invoice kind from the latest numbers (deposit +
+  // balance stay consistent). Keep the balance PDF for the draft if present.
+  let attach: { invoiceNumber: string; pdf: Buffer; isBalance: boolean } | null = null
+  for (const kind of kinds) {
+    const built = await buildInvoiceFromExtraction(x, {
+      bookingId: booking?.id ?? null,
+      threadId: id,
+      todayBrisbane: today,
+      kind,
+    })
+    if (!attach || kind === "balance") {
+      attach = { invoiceNumber: built.invoiceNumber, pdf: built.pdf, isBalance: kind === "balance" }
+    }
+  }
+  if (!attach) return "empty"
+
+  const playbook = await getPlaybook(category)
+  const total = x.add_ons.reduce(
+    (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
+    (x.per_person_price ?? 0) * (x.guests ?? 0)
+  )
+  const d = await draft({
+    category,
+    playbook,
+    threadHistory: thread.messages.map(toHistoryItem),
+    customerName: x.customer_name ?? firstName(customerMsg.from),
+    customExtras: [
+      {
+        role: "user",
+        content:
+          `The booking details have changed and we've UPDATED their invoice (${attach.invoiceNumber}) — it's ATTACHED as a PDF.\n` +
+          `Current details: ${x.guests ?? "?"} guests${x.event_date ? `, ${x.event_date}` : ""}${
+            x.time_label ? `, ${x.time_label}` : ""
+          }; total $${total.toFixed(2)}.\n` +
+          `Drafting rule: warm, short reply. Let them know we've updated their invoice to reflect the change and attached the new copy. Don't re-list every line. A couple of sentences.`,
+      },
+    ],
+  })
+  if (!d.body) {
+    await flagDraftFailure(thread, customerMsg, category)
+    return "unmet"
+  }
+  if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
+  const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
+  await deliver(thread, customerMsg, d, category, playbook, {
+    bcc: INVOICE_BCC, invoiceCreated: true,
+    extraAttachments: [
+      {
+        filename: `${attach.invoiceNumber} - ${safeName}${attach.isBalance ? " (Balance)" : ""}.pdf`,
+        contentType: "application/pdf",
+        data: attach.pdf,
+      },
+    ],
+  })
+  console.log(`[invoice] rebuilt ${attach.invoiceNumber} for thread ${id} (${kinds.join("+")})`)
+  return "rebuilt"
+}
+
 export async function runInvoiceUpdates(): Promise<{ processed: number }> {
   if (!invoiceConfigReady()) return { processed: 0 }
   // Make sure the label exists in Gmail so staff can find + apply it.
   await ensureLabel(UPDATE_INVOICE_LABEL).catch(() => {})
   const ids = await listThreadsByLabel(UPDATE_INVOICE_LABEL)
   let processed = 0
-  const today = todayBrisbaneStr()
-  const weekday = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "Australia/Brisbane",
-    weekday: "long",
-  }).format(new Date())
   for (const id of ids) {
     try {
-      const thread = await getThread(id)
-      if (!thread.messages.length) {
-        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
-        continue
-      }
-      const helloMail = config().HELLO_MAILBOX.toLowerCase()
-      let customerMsg = thread.messages[thread.messages.length - 1]!
-      for (let i = thread.messages.length - 1; i >= 0; i--) {
-        if (!thread.messages[i]!.from.toLowerCase().includes(helloMail)) {
-          customerMsg = thread.messages[i]!
-          break
-        }
-      }
-      const existingRow = await getThreadRow(id)
-      const category = (existingRow?.category as Category) ?? "events_tea_garden_functions"
-
-      // Which invoice kinds already exist on this thread?
-      const kindsRes = await db().query<{ kind: "standard" | "balance" }>(
-        `SELECT DISTINCT kind FROM inbox_invoices WHERE thread_id = $1 AND invoice_number <> 'PENDING'`,
-        [id]
-      )
-      const kinds = kindsRes.rows.map((r) => r.kind)
-
-      const x = await extractInvoiceDetails(thread, today, weekday)
-
-      // No invoice yet → behave like Make-Invoice (build the first one).
-      if (kinds.length === 0) {
-        if (manuallyInvoiceable(x)) {
-          await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
-        } else {
-          await applyLabel(id, ACTION_LABEL).catch(() => {})
-          await upsertThread({
-            thread_id: id,
-            last_message_id: thread.messages[thread.messages.length - 1]!.id,
-            state: "classified",
-            last_action: "labeled",
-            meta: { invoiceUpdateUnmet: true, missing: x.missing },
-          })
-        }
-        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
-        processed++
-        continue
-      }
-
-      // Need usable numbers to rebuild a correct invoice.
-      if (!manuallyInvoiceable(x)) {
-        await applyLabel(id, ACTION_LABEL).catch(() => {})
-        await upsertThread({
-          thread_id: id,
-          last_message_id: thread.messages[thread.messages.length - 1]!.id,
-          state: "classified",
-          last_action: "labeled",
-          meta: {
-            invoiceUpdateUnmet: true,
-            missing: x.missing,
-            note: "Update-Invoice requested but the new details aren't clear in the thread. State the change (e.g. new guest count) in the thread, then re-apply the label.",
-          },
-        })
-        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
-        console.warn(`[invoice] update on ${id} unmet — missing: ${x.missing.join(", ")}`)
-        continue
-      }
-
-      const booking = await getBookingByThread(id)
-      // Rebuild every existing invoice kind from the latest numbers (deposit +
-      // balance stay consistent). Keep the balance PDF for the draft if present.
-      let attach: { invoiceNumber: string; pdf: Buffer; isBalance: boolean } | null = null
-      for (const kind of kinds) {
-        const built = await buildInvoiceFromExtraction(x, {
-          bookingId: booking?.id ?? null,
-          threadId: id,
-          todayBrisbane: today,
-          kind,
-        })
-        if (!attach || kind === "balance") {
-          attach = { invoiceNumber: built.invoiceNumber, pdf: built.pdf, isBalance: kind === "balance" }
-        }
-      }
-      if (!attach) {
-        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
-        continue
-      }
-
-      const playbook = await getPlaybook(category)
-      const total = x.add_ons.reduce(
-        (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
-        (x.per_person_price ?? 0) * (x.guests ?? 0)
-      )
-      const d = await draft({
-        category,
-        playbook,
-        threadHistory: thread.messages.map(toHistoryItem),
-        customerName: x.customer_name ?? firstName(customerMsg.from),
-        customExtras: [
-          {
-            role: "user",
-            content:
-              `The booking details have changed and we've UPDATED their invoice (${attach.invoiceNumber}) — it's ATTACHED as a PDF.\n` +
-              `Current details: ${x.guests ?? "?"} guests${x.event_date ? `, ${x.event_date}` : ""}${
-                x.time_label ? `, ${x.time_label}` : ""
-              }; total $${total.toFixed(2)}.\n` +
-              `Drafting rule: warm, short reply. Let them know we've updated their invoice to reflect the change and attached the new copy. Don't re-list every line. A couple of sentences.`,
-          },
-        ],
-      })
-      if (!d.body) {
-        await flagDraftFailure(thread, customerMsg, category)
-        await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
-        continue
-      }
-      if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
-      const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
-      await deliver(thread, customerMsg, d, category, playbook, {
-        bcc: INVOICE_BCC, invoiceCreated: true,
-        extraAttachments: [
-          {
-            filename: `${attach.invoiceNumber} - ${safeName}${attach.isBalance ? " (Balance)" : ""}.pdf`,
-            contentType: "application/pdf",
-            data: attach.pdf,
-          },
-        ],
-      })
-      await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
+      await processInvoiceRebuild(id)
       processed++
-      console.log(`[invoice] updated ${attach.invoiceNumber} from thread ${id} (${kinds.join("+")})`)
     } catch (e) {
       console.error(`[invoice] update-invoice ${id} failed:`, e instanceof Error ? e.message : e)
+    } finally {
       await removeLabel(id, UPDATE_INVOICE_LABEL).catch(() => {})
     }
   }

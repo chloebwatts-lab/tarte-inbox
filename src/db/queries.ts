@@ -34,14 +34,17 @@ export async function saveTokens(t: {
 }): Promise<void> {
   await db().query(
     `INSERT INTO inbox_oauth_tokens (provider, access_token, refresh_token, scope, token_type, expiry, extra, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '{}'::jsonb), now())
      ON CONFLICT (provider) DO UPDATE
        SET access_token  = EXCLUDED.access_token,
            refresh_token = COALESCE(EXCLUDED.refresh_token, inbox_oauth_tokens.refresh_token),
            scope         = COALESCE(EXCLUDED.scope, inbox_oauth_tokens.scope),
            token_type    = COALESCE(EXCLUDED.token_type, inbox_oauth_tokens.token_type),
            expiry        = EXCLUDED.expiry,
-           extra         = EXCLUDED.extra,
+           -- Preserve extra (e.g. Xero tenants) when the caller didn't pass it:
+           -- routine token refreshes were wiping the tenant list, breaking Xero.
+           -- ($7 directly, NOT EXCLUDED.extra — that's already been defaulted.)
+           extra         = COALESCE($7::jsonb, inbox_oauth_tokens.extra),
            updated_at    = now()`,
     [
       t.provider,
@@ -50,7 +53,7 @@ export async function saveTokens(t: {
       t.scope ?? null,
       t.token_type ?? null,
       t.expiry ?? null,
-      t.extra ?? {},
+      t.extra ? JSON.stringify(t.extra) : null,
     ]
   )
 }

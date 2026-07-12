@@ -13,6 +13,7 @@ import {
   getInvoiceForEdit,
   regenerateInvoiceFromEdits,
   listInvoices,
+  createManualInvoice,
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
@@ -315,12 +316,88 @@ app.get("/invoices", async (c) => {
  .note{color:#8a8a8a;font-size:12px;margin-top:16px}
 </style>
 <h1>Invoices</h1>
+<p><a href="/invoice/new"><b>+ New invoice</b></a></p>
 <form class="find" action="/invoice/edit" method="get">
   <input type="text" name="n" placeholder="Find by number, e.g. TARTE-2026-00006" size="32">
   <button type="submit">Open</button>
 </form>
 <table><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Date</th><th></th></tr>${body}</table>
 <div class="note">* Older invoices created before the edit feature have no stored detail to regenerate from. Any invoice generated from now on is editable.</div>`)
+})
+
+function newInvoiceForm(msg?: string): string {
+  const field = (label: string, name: string, type = "text", placeholder = ""): string =>
+    `<label>${esc(label)}<input type="${type}" name="${name}" placeholder="${esc(placeholder)}"${
+      type === "number" ? ' step="any"' : ""
+    }></label>`
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>New invoice</title>
+<style>
+ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#3a3a3a}
+ h1{font-size:18px;color:#6e8d85}
+ label{display:block;margin:10px 0;font-size:13px;color:#6e8d85}
+ input{display:block;width:100%;box-sizing:border-box;padding:8px;margin-top:3px;font-size:15px;border:1px solid #d9e2df;border-radius:6px;color:#3a3a3a}
+ button{margin-top:16px;background:#6e8d85;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;cursor:pointer}
+ .msg{background:#f3f7f6;border-radius:6px;padding:10px 12px;margin:12px 0}
+ .note{color:#8a8a8a;font-size:12px;margin-top:14px}
+ a.back{color:#8a8a8a;font-size:13px;text-decoration:none}
+</style>
+<a class="back" href="/invoices">← All invoices</a>
+<h1>New invoice</h1>
+${msg ? `<div class="msg">${msg}</div>` : ""}
+<form method="post" action="/invoice/new">
+ ${field("Customer name *", "customer_name")}
+ ${field("Customer email *", "customer_email")}
+ ${field("Event type", "event_type", "text", "e.g. Baby Shower")}
+ ${field("Package", "package_name", "text", "e.g. Private High Tea in The Hideout")}
+ ${field("Venue space", "venue_space", "text", "The Hideout / Tea Garden / Beach House")}
+ ${field("Date (YYYY-MM-DD)", "event_date")}
+ ${field("Time", "time_label", "text", "e.g. 11:00am - 2:00pm")}
+ ${field("Guests *", "guests", "number")}
+ ${field("Price per person ($) *", "per_person_price", "number")}
+ ${field("Deposit % (default 50)", "deposit_pct", "number")}
+ ${field("Dietaries", "dietaries")}
+ <button type="submit">Create invoice &amp; draft email</button>
+</form>
+<div class="note">Creates the branded PDF and a draft email to the customer with it attached (BCC accounts &amp; Shawna). It does not send — review and send from Gmail Drafts. Don't double-submit: each submit makes a new invoice number.</div>`
+}
+
+app.get("/invoice/new", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  return c.html(newInvoiceForm())
+})
+
+app.post("/invoice/new", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  const form = await c.req.parseBody()
+  const str = (k: string): string | undefined => {
+    const v = form[k]
+    const s = typeof v === "string" ? v.trim() : ""
+    return s === "" ? undefined : s
+  }
+  const num = (k: string): number | undefined => {
+    const s = str(k)
+    if (s === undefined) return undefined
+    const v = Number(s)
+    return Number.isFinite(v) ? v : undefined
+  }
+  const result = await createManualInvoice({
+    customer_name: str("customer_name") ?? "",
+    customer_email: str("customer_email") ?? "",
+    event_type: str("event_type"),
+    package_name: str("package_name"),
+    venue_space: str("venue_space"),
+    event_date: str("event_date"),
+    time_label: str("time_label"),
+    guests: num("guests"),
+    per_person_price: num("per_person_price"),
+    deposit_pct: num("deposit_pct"),
+    dietaries: str("dietaries"),
+  })
+  const msg = result.ok
+    ? `✅ Created <b>${esc(result.invoiceNumber)}</b> — the draft email (PDF attached) is in Gmail Drafts, ready to review and send.`
+    : `⚠️ ${esc(result.error)}`
+  return c.html(newInvoiceForm(msg))
 })
 
 app.get("/invoice/edit", async (c) => {

@@ -23,6 +23,49 @@ export interface CalEvent {
   summary: string
 }
 
+/** Idempotent reminder event on an arbitrary calendar (e.g. the staff shared
+ * calendar). A deterministic id makes re-processing safe: insert → 409/410 →
+ * update. Timed when `startTime` (HH:MM) is known, otherwise all-day. */
+export async function upsertReminderEvent(e: {
+  calendarId: string
+  id: string // must match /[a-v0-9]{5,}/
+  summary: string
+  description?: string
+  date: string // YYYY-MM-DD (Brisbane)
+  startTime?: string // HH:MM 24h
+  durationMinutes?: number
+}): Promise<void> {
+  const c = await cal()
+  let body: calendar_v3.Schema$Event
+  if (e.startTime) {
+    const start = new Date(`${e.date}T${e.startTime}:00+10:00`)
+    const end = new Date(start.getTime() + (e.durationMinutes ?? 30) * 60_000)
+    body = {
+      summary: e.summary,
+      description: e.description,
+      start: { dateTime: start.toISOString(), timeZone: "Australia/Brisbane" },
+      end: { dateTime: end.toISOString(), timeZone: "Australia/Brisbane" },
+    }
+  } else {
+    body = {
+      summary: e.summary,
+      description: e.description,
+      start: { date: e.date },
+      end: { date: e.date },
+    }
+  }
+  try {
+    await c.events.insert({ calendarId: e.calendarId, requestBody: { ...body, id: e.id } })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/409|already exists|410/i.test(msg)) {
+      await c.events.update({ calendarId: e.calendarId, eventId: e.id, requestBody: body })
+    } else {
+      throw err
+    }
+  }
+}
+
 export async function listEvents(
   venue: Venue,
   rangeStart: Date,

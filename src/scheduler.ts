@@ -1,5 +1,12 @@
 import { config } from "./config.js"
-import { runTick, runInvoiceRequests, runInvoiceUpdates, sweepInvoiceDriveUploads, sweepSpam } from "./pipeline.js"
+import {
+  runTick,
+  runInvoiceRequests,
+  runInvoiceUpdates,
+  sweepInvoiceDriveUploads,
+  sweepSpam,
+  reassertDraftUnread,
+} from "./pipeline.js"
 import { ingestNbi } from "./nbi/ingest.js"
 import { digestDue, sendDailyDigest } from "./digest.js"
 import { nudgeStaleBookings, followUpQuietInfoThreads } from "./followups.js"
@@ -74,6 +81,12 @@ async function nbiTick(): Promise<void> {
     await sweepSpam()
   } catch (e) {
     console.error("[spam] sweep error:", e instanceof Error ? e.message : e)
+  }
+  // Keep threads with pending drafts UNREAD so staff can't lose them.
+  try {
+    await reassertDraftUnread()
+  } catch (e) {
+    console.error("[unread] sweep error:", e instanceof Error ? e.message : e)
   }
 }
 

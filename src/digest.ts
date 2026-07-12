@@ -313,9 +313,11 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
       : "Nothing needs you today — inbox is clear. 🎉") +
     `\n\n—\nTarte Inbox agent · ${date}`
 
+  // Plain ASCII separator: the em dash was rendering as mojibake in some
+  // clients before subject headers were RFC 2047-encoded, and "-" is safer.
   const subject = urgent.rows.length
-    ? `Inbox digest ${pretty} — 🚨 ${urgent.rows.length} URGENT, ${actionCount} to action`
-    : `Inbox digest ${pretty} — ${actionCount} to action`
+    ? `Inbox digest ${pretty} - ${urgent.rows.length} URGENT, ${actionCount} to action`
+    : `Inbox digest ${pretty} - ${actionCount} to action`
 
   await sendPlainEmail(
     config().HELLO_MAILBOX,

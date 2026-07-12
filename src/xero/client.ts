@@ -74,7 +74,25 @@ async function ensureXeroAuthed(): Promise<{ tenantId: string }> {
       expiry: refreshed.expires_at ? new Date(refreshed.expires_at * 1000) : null,
     })
   }
-  const tenants = (stored.extra?.["tenants"] as Array<{ tenantId: string; tenantName: string }> | undefined) ?? []
+  let tenants = (stored.extra?.["tenants"] as Array<{ tenantId: string; tenantName: string }> | undefined) ?? []
+  if (!tenants.length) {
+    // Tenants got wiped (a past token-refresh bug overwrote extra). They can
+    // be refetched with the live token — self-heal instead of forcing re-auth.
+    try {
+      await c.updateTenants(false)
+      tenants = (c.tenants as Array<{ tenantId: string; tenantName: string }>) ?? []
+      if (tenants.length) {
+        await saveTokens({
+          provider: "xero",
+          access_token: stored.access_token,
+          extra: { tenants },
+        })
+        console.log(`[xero] recovered ${tenants.length} tenant(s) via updateTenants`)
+      }
+    } catch (e) {
+      console.error("[xero] tenant recovery failed:", e instanceof Error ? e.message : e)
+    }
+  }
   const tarte = tenants.find((t) => /Tarte Currumbin/i.test(t.tenantName))
   const tenant = tarte ?? tenants[0]
   if (!tenant) throw new Error("xero linked but no tenants — re-authorise")

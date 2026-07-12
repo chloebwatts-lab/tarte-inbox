@@ -254,6 +254,20 @@ export async function markThreadRead(threadId: string): Promise<void> {
   })
 }
 
+/** Cheap check: does the thread have a pending DRAFT, and is it unread? Used
+ * by the hourly sweep that keeps drafted threads bold until actioned. */
+export async function threadDraftReadState(
+  threadId: string
+): Promise<{ hasDraft: boolean; unread: boolean }> {
+  const g = await gmail()
+  const r = await g.users.threads.get({ userId: "me", id: threadId, format: "minimal" })
+  const msgs = r.data.messages ?? []
+  return {
+    hasDraft: msgs.some((m) => (m.labelIds ?? []).includes("DRAFT")),
+    unread: msgs.some((m) => (m.labelIds ?? []).includes("UNREAD")),
+  }
+}
+
 /** Mark a thread UNREAD so a pending draft surfaces for staff (bold + in the
  * unread count) instead of being read past. */
 export async function markThreadUnread(threadId: string): Promise<void> {
@@ -318,7 +332,7 @@ function buildRfc822(
     `To: ${ctx.to}`,
     ctx.cc?.length ? `Cc: ${ctx.cc.join(", ")}` : null,
     ctx.bcc?.length ? `Bcc: ${ctx.bcc.join(", ")}` : null,
-    `Subject: ${subj}`,
+    `Subject: ${encodeHeaderValue(subj)}`,
     `In-Reply-To: ${ctx.inReplyTo}`,
     `References: ${refs}`,
     `MIME-Version: 1.0`,
@@ -367,6 +381,13 @@ function buildRfc822(
 
 function encodeRaw(rfc822: string): string {
   return Buffer.from(rfc822, "utf8").toString("base64url")
+}
+
+/** RFC 2047-encode a header value when it contains non-ASCII (em dashes,
+ * emoji, accents). Without this Gmail renders mojibake ("Ã¢Â€Â”"). */
+function encodeHeaderValue(value: string): string {
+  if (/^[\x20-\x7e]*$/.test(value)) return value
+  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`
 }
 
 /** Best-effort draft deletion (draft may already be sent or discarded). */
@@ -463,7 +484,7 @@ export async function sendPlainEmail(
   const rfc822 = [
     `From: ${fromHeader}`,
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeHeaderValue(subject)}`,
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=UTF-8`,
     `Content-Transfer-Encoding: 7bit`,
@@ -499,7 +520,7 @@ export async function createStandaloneDraft(
     `From: ${fromHeader}`,
     `To: ${to}`,
     bcc?.length ? `Bcc: ${bcc.join(", ")}` : null,
-    `Subject: ${subj}`,
+    `Subject: ${encodeHeaderValue(subj)}`,
     `MIME-Version: 1.0`,
   ].filter(Boolean) as string[]
 
@@ -547,6 +568,38 @@ export async function createStandaloneDraft(
   })
   if (!r.data.id) throw new Error("standalone draft returned no id")
   return r.data.id
+}
+
+/** Like createStandaloneDraft but also returns the NEW thread's id, so the
+ * caller can link records (e.g. a manually created invoice) to the thread. */
+export async function createStandaloneDraftWithThread(
+  to: string,
+  subject: string,
+  bodyText: string,
+  fromEmail: string,
+  fromName?: string,
+  attachments: Attachment[] = [],
+  bcc?: string[]
+): Promise<{ draftId: string; threadId: string }> {
+  const draftId = await createStandaloneDraft(to, subject, bodyText, fromEmail, fromName, attachments, bcc)
+  const g = await gmail()
+  const d = await g.users.drafts.get({ userId: "me", id: draftId, format: "minimal" })
+  const threadId = d.data.message?.threadId
+  if (!threadId) throw new Error("standalone draft has no thread id")
+  return { draftId, threadId }
+}
+
+/** True when WE (hello@) sent any email to this address in the last N days —
+ * across ALL threads. Guards against re-drafting for a customer who already
+ * got a reply on a duplicate/parallel thread (e.g. double form submissions). */
+export async function recentlyRepliedTo(email: string, days = 7): Promise<boolean> {
+  const g = await gmail()
+  const r = await g.users.messages.list({
+    userId: "me",
+    q: `in:sent to:${email} newer_than:${days}d`,
+    maxResults: 1,
+  })
+  return (r.data.messages ?? []).length > 0
 }
 
 /** Subject + from for a thread, cheap metadata-only fetch (digest links). */
@@ -602,7 +655,7 @@ export async function createForwardDraft(
   const rfc822 = [
     `From: ${fromHeader}`,
     `To: ${forwardTo}`,
-    `Subject: ${subj}`,
+    `Subject: ${encodeHeaderValue(subj)}`,
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=UTF-8`,
     `Content-Transfer-Encoding: 7bit`,
@@ -644,7 +697,7 @@ export async function sendForward(
   const rfc822 = [
     `From: ${fromHeader}`,
     `To: ${forwardTo}`,
-    `Subject: ${subj}`,
+    `Subject: ${encodeHeaderValue(subj)}`,
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=UTF-8`,
     `Content-Transfer-Encoding: 7bit`,

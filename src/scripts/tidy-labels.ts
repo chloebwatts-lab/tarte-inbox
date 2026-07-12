@@ -15,6 +15,7 @@ import {
   UPDATE_INVOICE_LABEL,
   INVOICE_CREATED_LABEL,
   INVOICE_SENT_LABEL,
+  TAKEAWAY_HT_LABEL,
 } from "../pipeline.js"
 
 // Colour scheme (Gmail palette). Grouped by meaning: warm = attention,
@@ -34,6 +35,7 @@ const COLORS: Record<string, { backgroundColor: string; textColor: string }> = {
   [UPDATE_INVOICE_LABEL]: C("#16a766", "#ffffff"),
   [INVOICE_CREATED_LABEL]: C("#fcda83", "#000000"), // gold = awaiting send
   [INVOICE_SENT_LABEL]: C("#0b804b", "#ffffff"), // deep green = sent
+  [TAKEAWAY_HT_LABEL]: C("#42d692", "#000000"), // mint = takeaway HT orders
   "Accounts / Invoices": C("#43d692", "#000000"),
   // events + bookings
   "Events / Tea Garden - High Tea": C("#4a86e8", "#ffffff"),
@@ -64,6 +66,7 @@ async function main(): Promise<void> {
     UPDATE_INVOICE_LABEL,
     INVOICE_CREATED_LABEL,
     INVOICE_SENT_LABEL,
+    TAKEAWAY_HT_LABEL,
   ])
 
   const auth = await ensureGoogleAuthed()
