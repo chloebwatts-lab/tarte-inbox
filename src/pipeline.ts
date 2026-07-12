@@ -275,7 +275,7 @@ export async function reassertDraftUnread(): Promise<number> {
     `SELECT thread_id FROM inbox_threads
       WHERE state IN ('drafted','form_drafted')
         AND last_processed_at > now() - interval '21 days'
-      ORDER BY last_processed_at DESC LIMIT 40`
+      ORDER BY last_processed_at DESC LIMIT 100`
   )
   let fixed = 0
   for (const r of rows) {
