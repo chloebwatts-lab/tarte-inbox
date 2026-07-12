@@ -307,10 +307,16 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     needsHuman.rows.length +
     formDrafts.rows.length +
     invoices.rows.length
+  // System-health line: broken things go at the TOP so they can't be missed.
+  const { healthDigestSection } = await import("./health.js")
+  const health = await healthDigestSection().catch(() => "")
+  const healthBroken = health.includes("problem")
   const body =
+    (healthBroken ? health + "\n\n" : "") +
     (sections.length
       ? sections.join("\n\n")
       : "Nothing needs you today — inbox is clear. 🎉") +
+    (healthBroken ? "" : `\n\n${health}`) +
     `\n\n—\nTarte Inbox agent · ${date}`
 
   // Plain ASCII separator: the em dash was rendering as mojibake in some

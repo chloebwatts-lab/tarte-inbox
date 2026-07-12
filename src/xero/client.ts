@@ -105,13 +105,16 @@ async function ensureXeroAuthed(): Promise<{ tenantId: string }> {
  * rotating refresh token warm so the next invoice never hits a dead link.
  */
 export async function xeroKeepalive(): Promise<void> {
+  // Reports into the watchdog so a broken Xero link ALERTS instead of just
+  // logging (the July tenant-wipe incident sat unnoticed in these logs).
+  const { setCheckStatus } = await import("../health.js")
   try {
     await ensureXeroAuthed()
+    await setCheckStatus("xero_api", true).catch(() => {})
   } catch (e) {
-    console.error(
-      "[xero] keepalive failed — invoicing may be broken, re-link at /oauth/xero/start:",
-      e instanceof Error ? e.message : e
-    )
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error("[xero] keepalive failed — re-link at /oauth/xero/start:", msg)
+    await setCheckStatus("xero_api", false, `Daily Xero connectivity check failed: ${msg}`).catch(() => {})
   }
 }
 

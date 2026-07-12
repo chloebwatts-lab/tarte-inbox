@@ -77,6 +77,10 @@ const schema = z.object({
   // Where takeaway-high-tea pickup reminders are created. Defaults to the
   // staff shared calendar (hello@ has writer access to it).
   TAKEAWAY_REMINDER_CALENDAR_ID: z.string().default("shawna@tarte.com.au"),
+
+  // Watchdog alert recipients (comma-separated). Alerts are written so the fix
+  // is doable from a phone (re-auth links etc.).
+  ALERT_EMAILS: z.string().default("hello@tarte.com.au,accounts@tarte.com.au"),
 })
 
 export type Config = z.infer<typeof schema>

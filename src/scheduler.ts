@@ -10,6 +10,7 @@ import {
 import { ingestNbi } from "./nbi/ingest.js"
 import { digestDue, sendDailyDigest } from "./digest.js"
 import { nudgeStaleBookings, followUpQuietInfoThreads } from "./followups.js"
+import { runQuickChecks, recordTickResult } from "./health.js"
 
 let running = false
 let timer: NodeJS.Timeout | undefined
@@ -17,6 +18,22 @@ let nbiTimer: NodeJS.Timeout | undefined
 let nbiRunning = false
 let dailyTimer: NodeJS.Timeout | undefined
 let dailyRunning = false
+let healthTimer: NodeJS.Timeout | undefined
+let healthRunning = false
+
+const HEALTH_INTERVAL_MS = 15 * 60 * 1000 // watchdog quick checks
+
+async function healthTick(): Promise<void> {
+  if (healthRunning) return
+  healthRunning = true
+  try {
+    await runQuickChecks()
+  } catch (e) {
+    console.error("[health] check run failed:", e instanceof Error ? e.message : e)
+  } finally {
+    healthRunning = false
+  }
+}
 
 const NBI_INTERVAL_MS = 60 * 60 * 1000 // 1 hour — sweeps last 7 days; idempotent
 const DAILY_CHECK_INTERVAL_MS = 10 * 60 * 1000 // digest + nudges checked every 10 min
@@ -103,8 +120,10 @@ export function startScheduler(): void {
       const { seen, acted } = await runTick()
       const ms = Date.now() - start
       console.log(`[scheduler] tick: seen=${seen} acted=${acted} (${ms}ms)`)
+      await recordTickResult(true)
     } catch (e) {
       console.error("[scheduler] tick error:", e)
+      await recordTickResult(false, e instanceof Error ? e.message : String(e))
     } finally {
       running = false
     }
@@ -135,13 +154,19 @@ export function startScheduler(): void {
   // Brisbane day after 07:00 (catches up on restart if the slot was missed).
   void dailyTick()
   dailyTimer = setInterval(() => void dailyTick(), DAILY_CHECK_INTERVAL_MS)
+
+  // Watchdog: quick health checks every 15 min (alerts by email on failure).
+  void healthTick()
+  healthTimer = setInterval(() => void healthTick(), HEALTH_INTERVAL_MS)
 }
 
 export function stopScheduler(): void {
   if (timer) clearInterval(timer)
   if (nbiTimer) clearInterval(nbiTimer)
   if (dailyTimer) clearInterval(dailyTimer)
+  if (healthTimer) clearInterval(healthTimer)
   timer = undefined
   nbiTimer = undefined
   dailyTimer = undefined
+  healthTimer = undefined
 }

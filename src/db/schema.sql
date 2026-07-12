@@ -184,6 +184,16 @@ CREATE TABLE IF NOT EXISTS inbox_payments (
 );
 CREATE INDEX IF NOT EXISTS inbox_payments_thread_idx ON inbox_payments(thread_id);
 
+-- Watchdog state: one row per health check. Alerts fire on ok->fail
+-- transitions (and re-fire daily while broken) so nothing breaks silently.
+CREATE TABLE IF NOT EXISTS inbox_health (
+  check_name    text PRIMARY KEY,
+  ok            boolean NOT NULL DEFAULT true,
+  detail        text,
+  since         timestamptz NOT NULL DEFAULT now(),
+  last_alert_at timestamptz
+);
+
 -- One row per daily digest sent, keyed by Brisbane calendar date.
 CREATE TABLE IF NOT EXISTS inbox_digest_log (
   sent_date         date PRIMARY KEY,
