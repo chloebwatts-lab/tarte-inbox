@@ -25,6 +25,17 @@ async function main(): Promise<void> {
     const dm = tg.data.messages?.[0]
     const hdr = (n: string): string =>
       dm?.payload?.headers?.find((h) => h.name?.toLowerCase() === n)?.value ?? ""
+    // Only clear automation junk and stale superseded drafts. Recipient-less
+    // drafts with a subject are almost certainly the girls' SAVED TEMPLATES
+    // ("High Tea Info", "Tarte Opening Hours") — never touch those; nor any
+    // fresh compose someone might still be writing.
+    const subject = hdr("subject")
+    const to = hdr("to")
+    const ageDays = dm?.internalDate ? (Date.now() - Number(dm.internalDate)) / 86400_000 : 0
+    const isAutomationJunk =
+      /^\[tarte triage\]/i.test(subject) || /^we.?ve received your enquiry$/i.test(subject)
+    const isStaleSuperseded = Boolean(to) && ageDays > 21
+    if (!isAutomationJunk && !isStaleSuperseded) continue
     if (apply) {
       try {
         await g.users.drafts.delete({ userId: "me", id: d.id })
