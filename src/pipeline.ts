@@ -208,34 +208,61 @@ async function maybeHandleTakeawayOrder(
   // card orders fall through to the normal automated-receipt archive.
   if (!/high ?tea/i.test(text)) return false
 
-  // "Requested Pickup Date: 12/Jul Sunday." (+ optional "... Pickup Time: 07:00")
-  const dateM = text.match(/Requested Pickup Date:?\s*(\d{1,2})\s*\/\s*([A-Za-z]{3,9})/i)
-  const timeM = text.match(/Requested Pickup Time:?\s*(\d{1,2}):(\d{2})/i)
+  // Pickup date arrives in several formats depending on the product:
+  //   "Requested Pickup Date: 12/Jul Sunday."      (bakery items)
+  //   "Requested Pickup Date: Sat 4th July"        (takeaway high tea)
+  //   item field "Date: 7/4/2026"                  (M/D/YYYY, US-style)
+  const dm1 = text.match(/Requested Pickup Date:?\s*(\d{1,2})\s*\/\s*([A-Za-z]{3,9})/i)
+  const dm2 = text.match(/Requested Pickup Date:?\s*(?:[A-Za-z]{3,9},?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})/i)
+  const dm3 = text.match(/\bDate:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  // "Requested Pickup Time: 07:00" or item "Time: 10:00:00 AM"
+  const timeM =
+    text.match(/Requested Pickup Time:?\s*(\d{1,2}):(\d{2})/i) ??
+    text.match(/\bTime:?\s*(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)?/i)
   // Customer name sits after BILLED TO (optionally PICKUP OPTION), before the
   // street number of the address.
   const nameM = text.match(/BILLED TO:?\s*(?:PICKUP OPTION:?\s*)?([A-Za-z][A-Za-z' .-]*?)(?=\s+\d)/i)
   const customer = nameM?.[1]?.trim() ?? "Customer"
 
+  let day: number | undefined
+  let mon: number | undefined
+  let yearHint: number | undefined
+  if (dm1) {
+    day = Number(dm1[1])
+    mon = MONTHS[dm1[2]!.slice(0, 3).toLowerCase()]
+  } else if (dm2 && MONTHS[dm2[2]!.slice(0, 3).toLowerCase()]) {
+    day = Number(dm2[1])
+    mon = MONTHS[dm2[2]!.slice(0, 3).toLowerCase()]
+  } else if (dm3) {
+    // Squarespace item fields are US M/D/YYYY (verified against the footer).
+    mon = Number(dm3[1])
+    day = Number(dm3[2])
+    yearHint = Number(dm3[3])
+  }
+
   let dateStr: string | undefined
-  if (dateM) {
-    const day = Number(dateM[1])
-    const mon = MONTHS[dateM[2]!.slice(0, 3).toLowerCase()]
-    if (mon) {
-      const todayB = todayBrisbaneStr() // YYYY-MM-DD
-      let year = Number(todayB.slice(0, 4))
-      const candidate = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-      // If that date is more than 30 days in the past, it must mean next year.
-      if (candidate < todayB) {
-        const past = (Date.parse(todayB) - Date.parse(candidate)) / 86400_000
-        if (past > 30) year += 1
-      }
-      dateStr = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+  if (day && mon && mon >= 1 && mon <= 12) {
+    const todayB = todayBrisbaneStr() // YYYY-MM-DD
+    let year = yearHint ?? Number(todayB.slice(0, 4))
+    const candidate = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+    // No explicit year + date >30d in the past → they mean next year.
+    if (!yearHint && candidate < todayB) {
+      const past = (Date.parse(todayB) - Date.parse(candidate)) / 86400_000
+      if (past > 30) year += 1
     }
+    dateStr = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
   }
 
   await applyLabel(thread.threadId, TAKEAWAY_HT_LABEL).catch(() => {})
   if (dateStr) {
-    const time = timeM ? `${timeM[1]!.padStart(2, "0")}:${timeM[2]}` : undefined
+    let time: string | undefined
+    if (timeM) {
+      let hh = Number(timeM[1])
+      const ampm = (timeM[3] ?? "").toUpperCase()
+      if (ampm === "PM" && hh < 12) hh += 12
+      if (ampm === "AM" && hh === 12) hh = 0
+      time = `${String(hh).padStart(2, "0")}:${timeM[2]}`
+    }
     try {
       await upsertReminderEvent({
         calendarId: config().TAKEAWAY_REMINDER_CALENDAR_ID,
