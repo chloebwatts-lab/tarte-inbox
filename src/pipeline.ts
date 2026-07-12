@@ -553,6 +553,14 @@ async function handleFormSubmission(
   }
   const result = await classify(form.subject, form.email, form.message)
   await applyLabel(thread.threadId, CATEGORY_LABELS[result.category])
+  // Tea Garden overlay (same rule as direct email): anything mentioning tea
+  // garden / high tea also carries the TG label so it groups visually.
+  if (
+    !result.category.startsWith("events_tea_garden") &&
+    /\btea ?garden\b|\bhigh ?tea\b/i.test(form.subject + " " + form.message)
+  ) {
+    await applyLabel(thread.threadId, CATEGORY_LABELS.events_tea_garden_high_tea).catch(() => {})
+  }
 
   // Forward-only categories (e.g. job applications → work@): while auto-send
   // is off, DON'T create a forward draft (they pile up disconnected and never
