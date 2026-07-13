@@ -503,13 +503,15 @@ export async function listNeedsLook(): Promise<NeedsLookItem[]> {
   return items.sort((a, b) => Number(b.urgent) - Number(a.urgent)).slice(0, 25)
 }
 
-/** Staff hit "Done" — they handled it in Gmail/elsewhere. Clear the flag. */
+/** Staff hit "Done" — they handled it in Gmail/elsewhere. Clear the flag.
+ * No-op for unknown thread ids (never invent rows). */
 export async function queueMarkDone(threadId: string): Promise<void> {
-  await removeLabel(threadId, ACTION_LABEL).catch(() => {})
   const row = await getThreadRow(threadId)
+  if (!row) return
+  await removeLabel(threadId, ACTION_LABEL).catch(() => {})
   await upsertThread({
     thread_id: threadId,
-    last_message_id: row?.last_message_id ?? "done",
+    last_message_id: row.last_message_id,
     state: "handled_manual",
     last_action: "queue_done",
   })
