@@ -184,6 +184,19 @@ CREATE TABLE IF NOT EXISTS inbox_payments (
 );
 CREATE INDEX IF NOT EXISTS inbox_payments_thread_idx ON inbox_payments(thread_id);
 
+-- Weekly synthesis of staff edits: what the girls consistently change in our
+-- drafts, distilled into proposed playbook guidance. Proposals only — a human
+-- (Chris) decides what gets applied to the playbooks.
+CREATE TABLE IF NOT EXISTS inbox_learning_notes (
+  id          bigserial PRIMARY KEY,
+  week_start  date NOT NULL,
+  category    text NOT NULL,
+  proposal    text NOT NULL,
+  sample_size int NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (week_start, category)
+);
+
 -- Watchdog state: one row per health check. Alerts fire on ok->fail
 -- transitions (and re-fire daily while broken) so nothing breaks silently.
 CREATE TABLE IF NOT EXISTS inbox_health (

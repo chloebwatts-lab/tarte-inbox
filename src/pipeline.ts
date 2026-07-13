@@ -19,6 +19,8 @@ import {
   createStandaloneDraftWithThread,
   recentlyRepliedTo,
   threadDraftReadState,
+  sendDraft,
+  getQueuePreview,
   sendInThreadReply,
   findOurSentReply,
   createForwardDraft,
@@ -293,20 +295,118 @@ async function maybeHandleTakeawayOrder(
 }
 
 /**
- * Staff DELETING a thread means "we're not responding to this" — the agent
- * must fully back off: remove our pending draft, drop the action flag, and
- * mark the thread dismissed so no sweep or digest resurrects it.
+ * Staff decided not to respond (deleted the thread, or hit Dismiss on the
+ * review queue) — the agent must fully back off: remove our pending draft,
+ * drop the action flag, and mark the thread dismissed so no sweep or digest
+ * resurrects it.
  */
-export async function dismissTrashedThread(threadId: string): Promise<void> {
+export async function dismissThread(threadId: string, reason: string): Promise<void> {
   await deleteThreadDrafts(threadId).catch(() => {})
   await removeLabel(threadId, ACTION_LABEL).catch(() => {})
   await upsertThread({
     thread_id: threadId,
     last_message_id: "dismissed",
     state: "dismissed_by_staff",
-    last_action: "dismissed_trash",
+    last_action: reason,
   })
-  console.log(`[pipeline] thread ${threadId} deleted by staff — dismissed, draft removed`)
+  console.log(`[pipeline] thread ${threadId} dismissed (${reason}) — draft removed`)
+}
+
+export async function dismissTrashedThread(threadId: string): Promise<void> {
+  await dismissThread(threadId, "dismissed_trash")
+}
+
+// --- Review queue: every pending draft on one mobile page, one tap to send ---
+// The single biggest staff time cost is opening each thread in Gmail to review
+// a draft. The queue shows customer message + our draft side by side; Send
+// fires the existing Gmail draft as-is (a human approves every send — this is
+// NOT auto-send, which stays off pending Chris's explicit go-ahead).
+
+export interface QueueItem {
+  threadId: string
+  category: string | null
+  subject: string
+  customerFrom: string
+  customerSnippet: string
+  draftBody: string
+  draftedAt: string | null
+  flags: string[]
+  hasInvoice: boolean
+}
+
+export async function listReviewQueue(): Promise<QueueItem[]> {
+  const { rows } = await db().query<{
+    thread_id: string
+    category: string | null
+    meta: Record<string, unknown>
+  }>(
+    `SELECT t.thread_id, t.category, t.meta
+       FROM inbox_threads t
+      WHERE t.state IN ('drafted','form_drafted')
+        AND t.last_processed_at > now() - interval '21 days'
+        AND (t.meta->>'queueSentAt') IS NULL
+        AND (t.meta->>'queueDraftGoneAt') IS NULL
+      ORDER BY t.last_processed_at DESC
+      LIMIT 30`
+  )
+  const items: QueueItem[] = []
+  for (const r of rows) {
+    try {
+      const p = await getQueuePreview(r.thread_id)
+      if (!p.hasDraft) continue // sent or deleted since — next tick reconciles
+      items.push({
+        threadId: r.thread_id,
+        category: r.category,
+        subject: p.subject,
+        customerFrom: p.customerFrom,
+        customerSnippet: p.customerSnippet,
+        draftBody: (r.meta["draftBody"] as string | undefined) ?? "(open in Gmail to view this draft)",
+        draftedAt: (r.meta["draftedAt"] as string | undefined) ?? null,
+        flags: Array.isArray(r.meta["flags"]) ? (r.meta["flags"] as string[]) : [],
+        hasInvoice: await threadHasInvoice(r.thread_id),
+      })
+    } catch {
+      /* thread gone — skip */
+    }
+  }
+  return items
+}
+
+/** Send the pending draft on a thread, exactly as it stands in Gmail (so any
+ * staff edits made in Gmail are included). Human-approved send. */
+export async function queueSendDraft(
+  threadId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const row = await getThreadRow(threadId)
+  if (!row || (row.state !== "drafted" && row.state !== "form_drafted"))
+    return { ok: false, error: "this one has already been handled" }
+  const draftId = row.meta["draftId"] as string | undefined
+  if (!draftId) return { ok: false, error: "no draft recorded for this thread" }
+  try {
+    await sendDraft(draftId)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/404|not found/i.test(msg)) {
+      // Draft already sent from Gmail or deleted — reconcile quietly.
+      await upsertThread({
+        thread_id: threadId,
+        last_message_id: row.last_message_id,
+        meta: { queueDraftGoneAt: new Date().toISOString() },
+      })
+      return { ok: false, error: "that draft was already sent or removed in Gmail" }
+    }
+    return { ok: false, error: msg }
+  }
+  // Leave state/last_action untouched: the next tick sees our sent reply on a
+  // 'drafted' thread and runs the normal capture path (verbatim learning,
+  // Invoice sent label, Drive archive). Just hide it from the queue now.
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: row.last_message_id,
+    meta: { queueSentAt: new Date().toISOString() },
+  })
+  console.log(`[queue] draft sent by staff for thread ${threadId}`)
+  return { ok: true }
 }
 
 /**
@@ -2781,7 +2881,13 @@ async function captureEdit(
     draftedAt
   )
   if (!sent) return
-  const sentBody = sent.bodyText.trim()
+  // Compare like with like: the sent message's bodyText includes the QUOTED
+  // THREAD below the reply (and often a signature), which the draft never
+  // had — raw comparison made every verbatim send look like a ~1,000-char
+  // rewrite and kept the auto-send trust data permanently at 0% verbatim.
+  const sentBody = dequote(sent.bodyText).trim()
+  const a = normalizeForDiff(draftBody)
+  const b = normalizeForDiff(sentBody)
   // Record verbatim sends too (edit_distance 0) — they're the trust signal
   // for promoting a category to auto-send, and silently dropping them left
   // us blind to how good the drafts actually were.
@@ -2790,14 +2896,20 @@ async function captureEdit(
     category: category ?? null,
     our_draft: draftBody,
     sent_reply: sentBody,
-    edit_distance:
-      sentBody === draftBody.trim()
-        ? 0
-        : levenshtein(draftBody.trim(), sentBody),
+    edit_distance: a === b ? 0 : levenshtein(a, b),
   })
 }
 
-function levenshtein(a: string, b: string): number {
+/** Whitespace/quote-mark noise must not count as an "edit". */
+export function normalizeForDiff(s: string): string {
+  return s
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+export function levenshtein(a: string, b: string): number {
   if (a === b) return 0
   if (!a.length) return b.length
   if (!b.length) return a.length

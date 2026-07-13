@@ -14,6 +14,9 @@ import {
   regenerateInvoiceFromEdits,
   listInvoices,
   createManualInvoice,
+  listReviewQueue,
+  queueSendDraft,
+  dismissThread,
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
@@ -446,6 +449,73 @@ app.post("/invoice/edit", async (c) => {
     : `⚠️ ${esc(result.error)}`
   if (!rec) return c.html(`<p>${msg}</p>`)
   return c.html(editForm(rec.invoice_number, (rec.editable ?? {}) as unknown as Record<string, unknown>, rec.kind, msg))
+})
+
+// --- Review queue: pending drafts, one tap to send (human-approved) ---
+
+app.get("/queue", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your queue link.", 403)
+  const items = await listReviewQueue()
+  const msg = c.req.query("m")
+  const cards = items
+    .map((it) => {
+      const cat = it.category ? esc(it.category.replace(/_/g, " ")) : "email"
+      const flags = it.flags.filter((f) => f !== "needs_human").map(esc).join(", ")
+      return `<div class="card">
+  <div class="who">${esc(it.customerFrom.replace(/<[^>]*>/g, "").trim() || it.customerFrom)}</div>
+  <div class="subj">${esc(it.subject)} <span class="cat">${cat}${it.hasInvoice ? " · 💸 invoice attached" : ""}${flags ? " · " + flags : ""}</span></div>
+  <div class="cust">“${esc(it.customerSnippet)}”</div>
+  <div class="draft">${esc(it.draftBody)}</div>
+  <div class="row">
+    <form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
+      <input type="hidden" name="t" value="${esc(it.threadId)}"><button class="send">Send ✓</button>
+    </form>
+    <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(it.threadId)}" target="_blank">Edit in Gmail</a>
+    <form method="post" action="/queue/dismiss" onsubmit="return confirm('Dismiss this? The draft will be deleted and no reply sent.')">
+      <input type="hidden" name="t" value="${esc(it.threadId)}"><button class="dismiss">Dismiss</button>
+    </form>
+  </div>
+</div>`
+    })
+    .join("\n")
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tarte reply queue</title>
+<style>
+ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:18px auto;padding:0 14px;color:#3a3a3a;background:#fafcfb}
+ h1{font-size:19px;color:#6e8d85;margin-bottom:2px} .sub{color:#8a8a8a;font-size:13px;margin-bottom:14px}
+ .msg{background:#eef7f2;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:14px}
+ .card{background:#fff;border:1px solid #e2e8e6;border-radius:10px;padding:14px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+ .who{font-weight:700} .subj{color:#6e8d85;font-size:13px;margin:2px 0 8px} .cat{color:#a9b5b1;font-weight:400}
+ .cust{color:#8a8a8a;font-size:13px;border-left:3px solid #e2e8e6;padding-left:9px;margin-bottom:9px}
+ .draft{white-space:pre-wrap;background:#f6f9f8;border-radius:8px;padding:10px 12px;font-size:14px;margin-bottom:10px}
+ .row{display:flex;gap:8px;align-items:center} .row form{margin:0}
+ button{border:0;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer}
+ .send{background:#6e8d85;color:#fff;font-weight:700} .dismiss{background:#f3e9e7;color:#a05c4c}
+ a.open{color:#6e8d85;font-size:13px;font-weight:600;text-decoration:none;padding:10px 4px}
+ .empty{background:#fff;border:1px dashed #cfdcd8;border-radius:10px;padding:26px;text-align:center;color:#8a8a8a}
+</style>
+<h1>Reply queue</h1>
+<div class="sub">${items.length} draft${items.length === 1 ? "" : "s"} waiting. Read, then Send — or open in Gmail to tweak first. Sending here sends the draft exactly as it stands.</div>
+${msg ? `<div class="msg">${esc(msg)}</div>` : ""}
+${cards || `<div class="empty">Nothing waiting — the inbox is clear 🎉</div>`}`)
+})
+
+app.post("/queue/send", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  const form = await c.req.parseBody()
+  const t = String(form["t"] ?? "")
+  if (!t) return c.text("missing thread", 400)
+  const r = await queueSendDraft(t)
+  return c.redirect(`/queue?m=${encodeURIComponent(r.ok ? "Sent ✓" : `Not sent: ${r.error}`)}`)
+})
+
+app.post("/queue/dismiss", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  const form = await c.req.parseBody()
+  const t = String(form["t"] ?? "")
+  if (!t) return c.text("missing thread", 400)
+  await dismissThread(t, "dismissed_queue")
+  return c.redirect(`/queue?m=${encodeURIComponent("Dismissed — draft removed, no reply will be sent.")}`)
 })
 
 // --- Playbooks (minimal admin until TK UI lands) ---

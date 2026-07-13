@@ -607,6 +607,48 @@ export async function recentlyRepliedTo(email: string, days = 7): Promise<boolea
   return (r.data.messages ?? []).length > 0
 }
 
+/** Send an existing Gmail draft as-is. Returns the sent message id. */
+export async function sendDraft(draftId: string): Promise<string> {
+  const g = await gmail()
+  const r = await g.users.drafts.send({ userId: "me", requestBody: { id: draftId } })
+  if (!r.data.id) throw new Error("draft send returned no message id")
+  return r.data.id
+}
+
+/** Cheap one-call preview for the review queue: subject, the latest customer
+ * message's sender + snippet, and whether a pending draft still exists. */
+export async function getQueuePreview(threadId: string): Promise<{
+  subject: string
+  customerFrom: string
+  customerSnippet: string
+  hasDraft: boolean
+}> {
+  const g = await gmail()
+  const r = await g.users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+    metadataHeaders: ["Subject", "From"],
+  })
+  const msgs = r.data.messages ?? []
+  const h = (m: (typeof msgs)[number] | undefined, n: string): string =>
+    m?.payload?.headers?.find((x) => x.name?.toLowerCase() === n.toLowerCase())?.value ?? ""
+  const real = msgs.filter((m) => !(m.labelIds ?? []).includes("DRAFT"))
+  let customer = real[real.length - 1]
+  for (let i = real.length - 1; i >= 0; i--) {
+    if (!/tarte\.com\.au/i.test(h(real[i], "From"))) {
+      customer = real[i]
+      break
+    }
+  }
+  return {
+    subject: h(real[0], "Subject"),
+    customerFrom: h(customer, "From"),
+    customerSnippet: customer?.snippet ?? "",
+    hasDraft: msgs.some((m) => (m.labelIds ?? []).includes("DRAFT")),
+  }
+}
+
 /** Subject + from for a thread, cheap metadata-only fetch (digest links). */
 export async function getThreadMeta(
   threadId: string

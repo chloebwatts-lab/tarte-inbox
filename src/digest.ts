@@ -138,6 +138,18 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
 
   const sections: string[] = []
 
+  // The fastest way through the inbox: every pending draft on one page,
+  // one tap to send. Pinned first so it's the habit.
+  {
+    const base = config().PUBLIC_BASE_URL.replace(/\/$/, "")
+    const token = config().INVOICE_PORTAL_TOKEN
+    if (token && drafts.rows.length) {
+      sections.push(
+        `⚡ FASTEST: review + send every waiting draft from one page:\n  ${base}/queue?k=${encodeURIComponent(token)}`
+      )
+    }
+  }
+
   if (payments.rows.length) {
     sections.push(
       `🏦 Deposit "paid" — VERIFY in the bank, then send the confirmation draft (${payments.rows.length}):\n` +
@@ -307,6 +319,16 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     needsHuman.rows.length +
     formDrafts.rows.length +
     invoices.rows.length
+  // Weekly learning synthesis (Mondays; idempotent) + this week's proposals.
+  try {
+    const { maybeSynthesizeLearnings, learningDigestSection } = await import("./llm/learning-synthesis.js")
+    await maybeSynthesizeLearnings()
+    const learn = await learningDigestSection()
+    if (learn) sections.push(learn)
+  } catch (e) {
+    console.error("[learn] digest section failed:", e instanceof Error ? e.message : e)
+  }
+
   // System-health line: broken things go at the TOP so they can't be missed.
   const { healthDigestSection } = await import("./health.js")
   const health = await healthDigestSection().catch(() => "")
