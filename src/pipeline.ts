@@ -13,6 +13,7 @@ import {
   removeLabel,
   markThreadUnread,
   archiveThread,
+  deleteDraft,
   deleteThreadDrafts,
   createInThreadDraft,
   createStandaloneDraft,
@@ -372,18 +373,64 @@ export async function listReviewQueue(): Promise<QueueItem[]> {
   return items
 }
 
-/** Send the pending draft on a thread, exactly as it stands in Gmail (so any
- * staff edits made in Gmail are included). Human-approved send. */
+/** Send the pending draft on a thread. Without editedBody it fires the Gmail
+ * draft exactly as it stands. With editedBody (queue textarea) it sends the
+ * edited text in-thread and removes the old draft — allowed only for drafts
+ * without attachments (rebuilding would silently drop an invoice PDF).
+ * Human-approved send either way. */
 export async function queueSendDraft(
-  threadId: string
+  threadId: string,
+  editedBody?: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const row = await getThreadRow(threadId)
   if (!row || (row.state !== "drafted" && row.state !== "form_drafted"))
     return { ok: false, error: "this one has already been handled" }
   const draftId = row.meta["draftId"] as string | undefined
   if (!draftId) return { ok: false, error: "no draft recorded for this thread" }
+
+  const originalBody = ((row.meta["draftBody"] as string | undefined) ?? "").trim()
+  const wantsEdit = editedBody !== undefined && editedBody.trim() !== "" && editedBody.trim() !== originalBody
+
   try {
-    await sendDraft(draftId)
+    if (wantsEdit) {
+      // Unknown attachment count (older rows) must be treated as "may have
+      // one" — rebuilding a draft drops attachments, and losing an invoice
+      // PDF or functions pack silently is worse than a Gmail round-trip.
+      const rawCount = row.meta["attachmentCount"]
+      if (rawCount === undefined || Number(rawCount) > 0)
+        return {
+          ok: false,
+          error: "this draft has (or may have) an attachment — edit it in Gmail so the attachment is kept",
+        }
+      // Rebuild threading off the conversation tail (same rule as deliver())
+      // and address the most recent customer.
+      const thread = await getThread(threadId)
+      if (!thread.messages.length) return { ok: false, error: "thread not found" }
+      const helloMail = config().HELLO_MAILBOX
+      let customer = thread.messages[thread.messages.length - 1]!
+      for (let i = thread.messages.length - 1; i >= 0; i--) {
+        if (!thread.messages[i]!.from.toLowerCase().includes(helloMail.toLowerCase())) {
+          customer = thread.messages[i]!
+          break
+        }
+      }
+      const tail = thread.messages[thread.messages.length - 1]!
+      await sendInThreadReply(
+        {
+          threadId,
+          to: customer.from,
+          subject: customer.subject,
+          inReplyTo: tail.messageIdHeader ?? "",
+          references: tail.references ?? tail.messageIdHeader ?? "",
+        },
+        editedBody.trim(),
+        helloMail,
+        "Tarte Team"
+      )
+      await deleteDraft(draftId)
+    } else {
+      await sendDraft(draftId)
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     if (/404|not found/i.test(msg)) {
@@ -398,15 +445,102 @@ export async function queueSendDraft(
     return { ok: false, error: msg }
   }
   // Leave state/last_action untouched: the next tick sees our sent reply on a
-  // 'drafted' thread and runs the normal capture path (verbatim learning,
-  // Invoice sent label, Drive archive). Just hide it from the queue now.
+  // 'drafted' thread and runs the normal capture path (learning with the real
+  // edit distance, Invoice sent label, Drive archive). Hide from the queue now.
   await upsertThread({
     thread_id: threadId,
     last_message_id: row.last_message_id,
     meta: { queueSentAt: new Date().toISOString() },
   })
-  console.log(`[queue] draft sent by staff for thread ${threadId}`)
+  console.log(`[queue] draft ${wantsEdit ? "edited + " : ""}sent by staff for thread ${threadId}`)
   return { ok: true }
+}
+
+// --- "Needs a look": Action-flagged threads with NO pending draft ---
+// The other half of the girls' workload (~40/week): urgent items, unmet
+// invoice requests, bounces, suppressed forwards. Surfaced with the agent's
+// reason note so the queue is the complete to-do list, not just drafts.
+
+export interface NeedsLookItem {
+  threadId: string
+  category: string | null
+  subject: string
+  customerFrom: string
+  customerSnippet: string
+  note: string | null
+  forwardTo: string | null // set → offer one-tap "Forward" (e.g. job apps → work@)
+  urgent: boolean
+}
+
+export async function listNeedsLook(): Promise<NeedsLookItem[]> {
+  const ids = await listThreadsByLabel(ACTION_LABEL)
+  const items: NeedsLookItem[] = []
+  for (const id of ids) {
+    try {
+      const row = await getThreadRow(id)
+      // Drafted threads already show in the drafts section of the queue.
+      if (row && (row.state === "drafted" || row.state === "form_drafted")) continue
+      if (row?.state === "dismissed_by_staff" || row?.state === "handled_manual") continue
+      const p = await getQueuePreview(id)
+      items.push({
+        threadId: id,
+        category: (row?.category as string | null) ?? null,
+        subject: p.subject,
+        customerFrom: p.customerFrom,
+        customerSnippet: p.customerSnippet,
+        note: (row?.meta["note"] as string | undefined) ?? null,
+        forwardTo:
+          row?.meta["forwardSuppressed"] === true
+            ? ((row.meta["forwardTo"] as string | undefined) ?? null)
+            : null,
+        urgent: row?.state === "urgent",
+      })
+    } catch {
+      /* thread gone — skip */
+    }
+  }
+  // Urgent first.
+  return items.sort((a, b) => Number(b.urgent) - Number(a.urgent)).slice(0, 25)
+}
+
+/** Staff hit "Done" — they handled it in Gmail/elsewhere. Clear the flag. */
+export async function queueMarkDone(threadId: string): Promise<void> {
+  await removeLabel(threadId, ACTION_LABEL).catch(() => {})
+  const row = await getThreadRow(threadId)
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: row?.last_message_id ?? "done",
+    state: "handled_manual",
+    last_action: "queue_done",
+  })
+  console.log(`[queue] thread ${threadId} marked done by staff`)
+}
+
+/** One-tap forward for suppressed forward-only categories (job apps → work@).
+ * Human-approved — the girls click it; nothing sends on its own. */
+export async function queueForward(
+  threadId: string
+): Promise<{ ok: true; to: string } | { ok: false; error: string }> {
+  const row = await getThreadRow(threadId)
+  const forwardTo = row?.meta["forwardTo"] as string | undefined
+  if (!row || row.meta["forwardSuppressed"] !== true || !forwardTo)
+    return { ok: false, error: "this one isn't a pending forward" }
+  const thread = await getThread(threadId)
+  const latest = thread.messages[thread.messages.length - 1]
+  if (!latest) return { ok: false, error: "thread not found" }
+  await sendForward(latest, forwardTo, config().HELLO_MAILBOX, "Tarte Inbox")
+  await removeLabel(threadId, ACTION_LABEL).catch(() => {})
+  await applyLabel(threadId, AUTO_HANDLED_LABEL).catch(() => {})
+  await archiveThread(threadId).catch(() => {})
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: latest.id,
+    state: "forwarded",
+    last_action: "sent_forward",
+    meta: { forwardSuppressed: false, forwardedByQueueAt: new Date().toISOString() },
+  })
+  console.log(`[queue] thread ${threadId} forwarded to ${forwardTo} by staff`)
+  return { ok: true, to: forwardTo }
 }
 
 /**
@@ -802,6 +936,7 @@ async function handleFormSubmission(
       draftBody: d.body,
       draftedAt: new Date().toISOString(),
       flags: d.flags,
+      attachmentCount: formAttachments.length,
     },
   })
   console.log(`[pipeline] form submission -> in-thread draft to ${form.email} (${result.category})`)

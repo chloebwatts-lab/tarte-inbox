@@ -35,7 +35,7 @@ export async function maybeSynthesizeLearnings(): Promise<number> {
   const { rows } = await db().query<LearningRow>(
     `SELECT category, our_draft, sent_reply, edit_distance
        FROM inbox_learnings
-      WHERE created_at > now() - interval '7 days'
+      WHERE noted_at > now() - interval '7 days'
         AND edit_distance > 40
         AND category IS NOT NULL
       ORDER BY category, edit_distance DESC`

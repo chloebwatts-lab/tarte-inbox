@@ -17,6 +17,9 @@ import {
   listReviewQueue,
   queueSendDraft,
   dismissThread,
+  listNeedsLook,
+  queueMarkDone,
+  queueForward,
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
@@ -455,7 +458,7 @@ app.post("/invoice/edit", async (c) => {
 
 app.get("/queue", async (c) => {
   if (!portalAuthed(c)) return c.text("Not authorised — open this from your queue link.", 403)
-  const items = await listReviewQueue()
+  const [items, looks] = await Promise.all([listReviewQueue(), listNeedsLook()])
   const msg = c.req.query("m")
   const cards = items
     .map((it) => {
@@ -465,15 +468,36 @@ app.get("/queue", async (c) => {
   <div class="who">${esc(it.customerFrom.replace(/<[^>]*>/g, "").trim() || it.customerFrom)}</div>
   <div class="subj">${esc(it.subject)} <span class="cat">${cat}${it.hasInvoice ? " · 💸 invoice attached" : ""}${flags ? " · " + flags : ""}</span></div>
   <div class="cust">“${esc(it.customerSnippet)}”</div>
-  <div class="draft">${esc(it.draftBody)}</div>
+  <form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
+    <input type="hidden" name="t" value="${esc(it.threadId)}">
+    <textarea name="body" rows="${Math.min(14, Math.max(4, it.draftBody.split("\n").length + 1))}">${esc(it.draftBody)}</textarea>
+    <div class="row">
+      <button class="send">Send ✓</button>
+      <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(it.threadId)}" target="_blank">Open in Gmail</a>
+    </div>
+  </form>
+  <form class="dismissform" method="post" action="/queue/dismiss" onsubmit="return confirm('Dismiss this? The draft will be deleted and no reply sent.')">
+    <input type="hidden" name="t" value="${esc(it.threadId)}"><button class="dismiss">Dismiss</button>
+  </form>
+</div>`
+    })
+    .join("\n")
+  const lookCards = looks
+    .map((it) => {
+      const cat = it.category ? esc(it.category.replace(/_/g, " ")) : ""
+      return `<div class="card${it.urgent ? " urgent" : ""}">
+  <div class="who">${it.urgent ? "🚨 " : ""}${esc(it.customerFrom.replace(/<[^>]*>/g, "").trim() || it.customerFrom)}</div>
+  <div class="subj">${esc(it.subject)} <span class="cat">${cat}</span></div>
+  <div class="cust">“${esc(it.customerSnippet)}”</div>
+  ${it.note ? `<div class="note">🤖 ${esc(it.note)}</div>` : ""}
   <div class="row">
-    <form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
-      <input type="hidden" name="t" value="${esc(it.threadId)}"><button class="send">Send ✓</button>
-    </form>
-    <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(it.threadId)}" target="_blank">Edit in Gmail</a>
-    <form method="post" action="/queue/dismiss" onsubmit="return confirm('Dismiss this? The draft will be deleted and no reply sent.')">
-      <input type="hidden" name="t" value="${esc(it.threadId)}"><button class="dismiss">Dismiss</button>
-    </form>
+    ${
+      it.forwardTo
+        ? `<form method="post" action="/queue/forward" onsubmit="return confirm('Forward this to ${esc(it.forwardTo)}?')"><input type="hidden" name="t" value="${esc(it.threadId)}"><button class="send">Forward to ${esc(it.forwardTo.split("@")[0] ?? it.forwardTo)} ✓</button></form>`
+        : ""
+    }
+    <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(it.threadId)}" target="_blank">Open in Gmail</a>
+    <form method="post" action="/queue/done"><input type="hidden" name="t" value="${esc(it.threadId)}"><button class="done">Done ✓</button></form>
   </div>
 </div>`
     })
@@ -483,21 +507,28 @@ app.get("/queue", async (c) => {
 <style>
  body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:18px auto;padding:0 14px;color:#3a3a3a;background:#fafcfb}
  h1{font-size:19px;color:#6e8d85;margin-bottom:2px} .sub{color:#8a8a8a;font-size:13px;margin-bottom:14px}
+ h2{font-size:15px;color:#6e8d85;margin:22px 0 4px}
  .msg{background:#eef7f2;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:14px}
- .card{background:#fff;border:1px solid #e2e8e6;border-radius:10px;padding:14px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+ .card{background:#fff;border:1px solid #e2e8e6;border-radius:10px;padding:14px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.04);position:relative}
+ .card.urgent{border-color:#e8b0a5;background:#fff8f6}
  .who{font-weight:700} .subj{color:#6e8d85;font-size:13px;margin:2px 0 8px} .cat{color:#a9b5b1;font-weight:400}
  .cust{color:#8a8a8a;font-size:13px;border-left:3px solid #e2e8e6;padding-left:9px;margin-bottom:9px}
- .draft{white-space:pre-wrap;background:#f6f9f8;border-radius:8px;padding:10px 12px;font-size:14px;margin-bottom:10px}
- .row{display:flex;gap:8px;align-items:center} .row form{margin:0}
+ .note{background:#fbf6ea;border-radius:8px;padding:8px 10px;font-size:13px;color:#8a7546;margin-bottom:9px}
+ textarea{width:100%;box-sizing:border-box;border:1px solid #dfe8e5;border-radius:8px;background:#f6f9f8;padding:10px 12px;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#3a3a3a;margin-bottom:8px}
+ .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .row form{margin:0}
  button{border:0;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer}
  .send{background:#6e8d85;color:#fff;font-weight:700} .dismiss{background:#f3e9e7;color:#a05c4c}
+ .done{background:#e8f1ee;color:#3f6b5f;font-weight:600}
+ .dismissform{position:absolute;top:12px;right:12px} .dismissform .dismiss{padding:6px 10px;font-size:12px}
  a.open{color:#6e8d85;font-size:13px;font-weight:600;text-decoration:none;padding:10px 4px}
  .empty{background:#fff;border:1px dashed #cfdcd8;border-radius:10px;padding:26px;text-align:center;color:#8a8a8a}
 </style>
 <h1>Reply queue</h1>
-<div class="sub">${items.length} draft${items.length === 1 ? "" : "s"} waiting. Read, then Send — or open in Gmail to tweak first. Sending here sends the draft exactly as it stands.</div>
+<div class="sub">${items.length} draft${items.length === 1 ? "" : "s"} to send · ${looks.length} to look at. Tweak the text right here if needed, then Send — it goes exactly as shown.</div>
 ${msg ? `<div class="msg">${esc(msg)}</div>` : ""}
-${cards || `<div class="empty">Nothing waiting — the inbox is clear 🎉</div>`}`)
+${cards || `<div class="empty">No drafts waiting 🎉</div>`}
+<h2>Needs a look (no draft — the agent left it for you)</h2>
+${lookCards || `<div class="empty">Nothing here either 🎉</div>`}`)
 })
 
 app.post("/queue/send", async (c) => {
@@ -505,8 +536,29 @@ app.post("/queue/send", async (c) => {
   const form = await c.req.parseBody()
   const t = String(form["t"] ?? "")
   if (!t) return c.text("missing thread", 400)
-  const r = await queueSendDraft(t)
+  const body = typeof form["body"] === "string" ? (form["body"] as string) : undefined
+  const r = await queueSendDraft(t, body)
   return c.redirect(`/queue?m=${encodeURIComponent(r.ok ? "Sent ✓" : `Not sent: ${r.error}`)}`)
+})
+
+app.post("/queue/done", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  const form = await c.req.parseBody()
+  const t = String(form["t"] ?? "")
+  if (!t) return c.text("missing thread", 400)
+  await queueMarkDone(t)
+  return c.redirect(`/queue?m=${encodeURIComponent("Marked done ✓")}`)
+})
+
+app.post("/queue/forward", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  const form = await c.req.parseBody()
+  const t = String(form["t"] ?? "")
+  if (!t) return c.text("missing thread", 400)
+  const r = await queueForward(t)
+  return c.redirect(
+    `/queue?m=${encodeURIComponent(r.ok ? `Forwarded to ${r.to} ✓` : `Not forwarded: ${r.error}`)}`
+  )
 })
 
 app.post("/queue/dismiss", async (c) => {
