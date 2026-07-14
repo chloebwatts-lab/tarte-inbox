@@ -266,18 +266,36 @@ function portalAuthed(c: Context): boolean {
   return getCookie(c, "inv_portal") === token
 }
 
+interface AddOnRow {
+  description?: string
+  unit_price?: number
+  per_person?: boolean
+}
+
 function editForm(invoiceNumber: string, x: Record<string, unknown>, kind: string, msg?: string): string {
   const field = (label: string, name: string, value: unknown, type = "text"): string =>
     `<label>${esc(label)}<input type="${type}" name="${name}" value="${esc(value)}"${
       type === "number" ? ' step="any"' : ""
     }></label>`
+  const addOns = (Array.isArray(x["add_ons"]) ? (x["add_ons"] as AddOnRow[]) : []).filter(Boolean)
+  const extraRow = (i: number | string, a: AddOnRow, isNew: boolean): string => `
+ <div class="line">
+   <input class="ldesc" type="text" name="x_desc_${i}" value="${esc(a.description ?? "")}" placeholder="${isNew ? "Add another line (leave blank if not needed)" : "Description"}">
+   <input class="lprice" type="number" step="any" name="x_price_${i}" value="${a.unit_price ?? ""}" placeholder="$">
+   <label class="lchk"><input type="checkbox" name="x_pp_${i}"${a.per_person !== false ? " checked" : ""}> × guests</label>
+   ${isNew ? "" : `<label class="lchk ldel"><input type="checkbox" name="x_del_${i}"> remove</label>`}
+ </div>`
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Edit ${esc(invoiceNumber)}</title>
 <style>
  body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#3a3a3a}
- h1{font-size:18px;color:#6e8d85} .tag{color:#8a8a8a;font-size:13px}
+ h1{font-size:18px;color:#6e8d85} h2{font-size:14px;color:#6e8d85;margin:20px 0 4px} .tag{color:#8a8a8a;font-size:13px}
  label{display:block;margin:10px 0;font-size:13px;color:#6e8d85}
  input{display:block;width:100%;box-sizing:border-box;padding:8px;margin-top:3px;font-size:15px;border:1px solid #d9e2df;border-radius:6px;color:#3a3a3a}
+ .line{display:flex;gap:6px;align-items:center;margin:6px 0}
+ .line input{margin:0} .ldesc{flex:3} .lprice{flex:1;min-width:70px}
+ .lchk{display:flex;align-items:center;gap:4px;font-size:12px;color:#8a8a8a;margin:0;white-space:nowrap}
+ .lchk input{width:auto;display:inline} .ldel{color:#a05c4c}
  button{margin-top:16px;background:#6e8d85;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;cursor:pointer}
  .msg{background:#f3f7f6;border-radius:6px;padding:10px 12px;margin:12px 0}
  .note{color:#8a8a8a;font-size:12px;margin-top:14px}
@@ -285,24 +303,30 @@ function editForm(invoiceNumber: string, x: Record<string, unknown>, kind: strin
 </style>
 <a class="back" href="/invoices">← All invoices</a>
 <h1>Edit invoice ${esc(invoiceNumber)}</h1>
-<div class="tag">${esc(kind === "balance" ? "Balance invoice" : "Deposit invoice")} — change a field and regenerate. Totals recalculate automatically.</div>
+<div class="tag">${esc(kind === "balance" ? "Balance invoice" : "Invoice")} — change anything below, then regenerate. Totals recalculate automatically.</div>
 ${msg ? `<div class="msg">${msg}</div>` : ""}
 <form method="post" action="/invoice/edit">
  <input type="hidden" name="n" value="${esc(invoiceNumber)}">
  ${field("Customer name", "customer_name", x["customer_name"])}
  ${field("Customer email", "customer_email", x["customer_email"])}
  ${field("Event type", "event_type", x["event_type"])}
- ${field("Package", "package_name", x["package_name"])}
- ${field("Venue space", "venue_space", x["venue_space"])}
  ${field("Date (YYYY-MM-DD)", "event_date", x["event_date"])}
  ${field("Time", "time_label", x["time_label"])}
- ${field("Guests", "guests", x["guests"], "number")}
- ${field("Price per person ($)", "per_person_price", x["per_person_price"], "number")}
- ${field("Deposit %", "deposit_pct", x["deposit_pct"], "number")}
  ${field("Dietaries", "dietaries", x["dietaries"])}
+ ${field("Deposit % (table bookings never show a deposit)", "deposit_pct", x["deposit_pct"], "number")}
+ <h2>Line 1 — the package</h2>
+ ${field("Description", "package_name", x["package_name"])}
+ <div class="line">
+   <label style="flex:1;margin:0">Guests<input type="number" step="1" name="guests" value="${esc(x["guests"])}"></label>
+   <label style="flex:1;margin:0">Price per person ($)<input type="number" step="any" name="per_person_price" value="${esc(x["per_person_price"])}"></label>
+ </div>
+ <h2>Extra lines</h2>
+ ${addOns.map((a, i) => extraRow(i, a, false)).join("") || `<div class="note">No extras on this invoice.</div>`}
+ ${extraRow("new1", {}, true)}
+ ${extraRow("new2", {}, true)}
  <button type="submit">Regenerate invoice &amp; draft</button>
 </form>
-<div class="note">This rebuilds the PDF and refreshes the draft in the email thread (BCC accounts &amp; Shawna). It does not send — review and send from Gmail as usual.</div>`
+<div class="note">Tick <b>remove</b> to delete a line. This rebuilds the PDF and refreshes the draft in the email thread (BCC accounts &amp; Shawna). It does not send — review and send from Gmail as usual.</div>`
 }
 
 app.get("/invoices", async (c) => {
@@ -449,6 +473,21 @@ app.post("/invoice/edit", async (c) => {
     const v = Number(s)
     return Number.isFinite(v) ? v : undefined
   }
+  // Rebuild the extras list from the submitted rows: existing rows (skipping
+  // any ticked "remove"), then the blank add-a-line rows if filled in. The
+  // whole list replaces what was stored — deletes and price changes both work.
+  const addOns: Array<{ description: string; unit_price: number; per_person: boolean }> = []
+  const collectRow = (key: string | number): void => {
+    if (form[`x_del_${key}`] !== undefined) return // ticked remove
+    const desc = str(`x_desc_${key}`)
+    const price = num(`x_price_${key}`)
+    if (!desc || price === undefined) return
+    addOns.push({ description: desc, unit_price: price, per_person: form[`x_pp_${key}`] !== undefined })
+  }
+  for (let i = 0; i < 20; i++) collectRow(i)
+  collectRow("new1")
+  collectRow("new2")
+
   const edits: InvoiceEdits = {
     customer_name: str("customer_name"),
     customer_email: str("customer_email"),
@@ -461,12 +500,40 @@ app.post("/invoice/edit", async (c) => {
     guests: num("guests"),
     per_person_price: num("per_person_price"),
     deposit_pct: num("deposit_pct"),
+    add_ons: addOns,
   }
-  const result = await regenerateInvoiceFromEdits(n, edits)
-  const rec = await getInvoiceForEdit(result.ok ? result.invoiceNumber : n)
-  const msg = result.ok
-    ? `✅ Regenerated <b>${esc(result.invoiceNumber)}</b> — the updated PDF is now on the draft in Gmail, ready to review and send.`
-    : `⚠️ ${esc(result.error)}`
+  let msg: string
+  let okNumber = n
+  try {
+    const result = await regenerateInvoiceFromEdits(n, edits)
+    if (result.ok) {
+      okNumber = result.invoiceNumber
+      // Show the maths on screen so staff never have to open the PDF to
+      // check whether their change stuck.
+      const rec2 = await getInvoiceForEdit(okNumber)
+      const e2 = (rec2?.editable ?? {}) as unknown as Record<string, unknown>
+      const guests = Number(e2["guests"] ?? 0)
+      const pp = Number(e2["per_person_price"] ?? 0)
+      const extras = (Array.isArray(e2["add_ons"]) ? (e2["add_ons"] as AddOnRow[]) : [])
+      let total = guests * pp
+      const lines = [`${esc(String(e2["package_name"] ?? "Package"))}: ${guests} × $${pp} = $${(guests * pp).toFixed(2)}`]
+      for (const a of extras) {
+        const qty = a.per_person !== false ? guests : 1
+        const amt = qty * Number(a.unit_price ?? 0)
+        total += amt
+        lines.push(`${esc(a.description ?? "")}: ${qty} × $${a.unit_price} = $${amt.toFixed(2)}`)
+      }
+      msg =
+        `✅ Regenerated <b>${esc(okNumber)}</b> — the updated PDF is on the draft in Gmail, ready to review and send.<br><br>` +
+        lines.join("<br>") +
+        `<br><b>Total: $${total.toFixed(2)}</b>`
+    } else {
+      msg = `⚠️ Not updated: ${esc(result.error)}`
+    }
+  } catch (e) {
+    msg = `⚠️ Something went wrong and the invoice was NOT updated: ${esc(e instanceof Error ? e.message : String(e))}. Try again, or message Chris/Claude.`
+  }
+  const rec = await getInvoiceForEdit(okNumber)
   if (!rec) return c.html(`<p>${msg}</p>`)
   return c.html(editForm(rec.invoice_number, (rec.editable ?? {}) as unknown as Record<string, unknown>, rec.kind, msg))
 })

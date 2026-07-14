@@ -1847,6 +1847,9 @@ export interface InvoiceEdits {
   time_label?: string
   dietaries?: string
   deposit_pct?: number
+  // When provided, REPLACES the stored extras wholesale — the form submits the
+  // full desired list, so staff can change, remove, or add lines freely.
+  add_ons?: Array<{ description: string; unit_price: number; per_person: boolean }>
 }
 
 export interface InvoiceRecord {
@@ -2016,6 +2019,7 @@ export async function regenerateInvoiceFromEdits(
     time_label: edits.time_label ?? base.time_label,
     dietaries: edits.dietaries ?? base.dietaries,
     deposit_pct: edits.deposit_pct ?? base.deposit_pct,
+    add_ons: edits.add_ons ?? base.add_ons,
   }
 
   const thread = await getThread(rec.thread_id)
