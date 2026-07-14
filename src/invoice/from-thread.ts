@@ -62,6 +62,7 @@ CRITICAL rules:
 - customer_confirmed = true ONLY when the CUSTOMER has explicitly said they want to go ahead / lock it in / pay the deposit / "please invoice me". Merely asking for availability, prices, packages, or options is NOT confirmation.
 - ready_to_invoice = true ONLY when ALL hold: booking_type is "private_hire"; customer_confirmed is true; a specific DATE is confirmed/held; the PACKAGE and a real PER-PERSON PRICE that was actually quoted in the thread are known; and the GUEST COUNT is given. In EVERY other case ready_to_invoice = false (list what's missing). When in any doubt, false.
 - NEVER invent a price or a deposit. If the per-person price was not actually stated in the thread, leave per_person_price null and ready_to_invoice false. Do NOT fabricate a "$500 save-the-date" line — only include a deposit/amount the thread actually agreed.
+- per_person_price is the BASE package price ONLY. Anything you list in add_ons must NOT also be folded into per_person_price — the invoice adds them as separate lines, so including them in both double-charges the customer (e.g. $89 package + $10 charcuterie + $22 steak means per_person_price 89, NOT 121).
 - Use the MOST RECENT agreed value when something changes (e.g. 32 guests later revised to 30 → 30).
 - Resolve relative/partial dates ("9th August") to YYYY-MM-DD using the TODAY line. Dates must be in the future.
 - customer_email: the customer's real address (not hello@tarte.com.au).`
