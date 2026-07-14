@@ -233,6 +233,22 @@ const esc = (s: unknown): string =>
 // The invoice pages are password-free but gated by a secret token (capability
 // URL). Presenting ?k=<token> once sets a cookie so all the links + the form
 // then work without re-passing it. Closed (403) until INVOICE_PORTAL_TOKEN is set.
+/** Friendly 403 for portal pages: staff hitting a tokenless/stale link saw a
+ * bare "Not authorised" and read it as the site being broken (Shawna,
+ * 2026-07-14). Tell them exactly how to get in instead. */
+function portalDenied(c: Context): Response {
+  return c.html(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tarte — link needs a key</title>
+<style>body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:40px auto;padding:0 16px;color:#3a3a3a}h1{font-size:18px;color:#6e8d85}.box{background:#f6f9f8;border-radius:10px;padding:14px 16px}</style>
+<h1>This link needs its key 🔑</h1>
+<div class="box">You've opened a Tarte staff page without the secret key on the end of the link.<br><br>
+<b>Fix:</b> open today's <b>Inbox digest email</b> in hello@ and tap the queue or invoice link there — those carry the key and this device will then stay signed in for 60 days.<br><br>
+Still stuck? Message Chris (or Claude) for the full link.</div>`,
+    403
+  )
+}
+
 function portalAuthed(c: Context): boolean {
   const token = config().INVOICE_PORTAL_TOKEN
   if (!token) return false
@@ -290,7 +306,7 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
 }
 
 app.get("/invoices", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const rows = await listInvoices()
   const fmt = (n: unknown): string => `$${Number(n ?? 0).toLocaleString("en-AU")}`
   const body = rows
@@ -370,12 +386,12 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
 }
 
 app.get("/invoice/new", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   return c.html(newInvoiceForm())
 })
 
 app.post("/invoice/new", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const str = (k: string): string | undefined => {
     const v = form[k]
@@ -408,7 +424,7 @@ app.post("/invoice/new", async (c) => {
 })
 
 app.get("/invoice/edit", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const n = c.req.query("n")
   if (!n) return c.text("missing ?n=<invoice number>", 400)
   const rec = await getInvoiceForEdit(n)
@@ -418,7 +434,7 @@ app.get("/invoice/edit", async (c) => {
 })
 
 app.post("/invoice/edit", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your invoices link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const n = String(form["n"] ?? "")
   if (!n) return c.text("missing invoice number", 400)
@@ -458,7 +474,7 @@ app.post("/invoice/edit", async (c) => {
 // --- Review queue: pending drafts, one tap to send (human-approved) ---
 
 app.get("/queue", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your queue link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const [items, looks] = await Promise.all([listReviewQueue(), listNeedsLook()])
   const msg = c.req.query("m")
   const cards = items
@@ -533,7 +549,7 @@ ${lookCards || `<div class="empty">Nothing here either 🎉</div>`}`)
 })
 
 app.get("/queue/thread", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised — open this from your queue link.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const t = c.req.query("t")
   if (!t) return c.text("missing ?t=<thread id>", 400)
   const v = await getQueueThreadView(t)
@@ -623,7 +639,7 @@ ${action}`)
 })
 
 app.post("/queue/send", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const t = String(form["t"] ?? "")
   if (!t) return c.text("missing thread", 400)
@@ -633,7 +649,7 @@ app.post("/queue/send", async (c) => {
 })
 
 app.post("/queue/done", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const t = String(form["t"] ?? "")
   if (!t) return c.text("missing thread", 400)
@@ -642,7 +658,7 @@ app.post("/queue/done", async (c) => {
 })
 
 app.post("/queue/forward", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const t = String(form["t"] ?? "")
   if (!t) return c.text("missing thread", 400)
@@ -653,7 +669,7 @@ app.post("/queue/forward", async (c) => {
 })
 
 app.post("/queue/dismiss", async (c) => {
-  if (!portalAuthed(c)) return c.text("Not authorised.", 403)
+  if (!portalAuthed(c)) return portalDenied(c)
   const form = await c.req.parseBody()
   const t = String(form["t"] ?? "")
   if (!t) return c.text("missing thread", 400)

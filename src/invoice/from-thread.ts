@@ -228,9 +228,30 @@ export async function buildInvoiceFromExtraction(
         year: "numeric",
       })
     : undefined
-  const depositPct = x.deposit_pct ?? 50
+  // Table bookings take NO deposit (Chris's standing rule — deposits are for
+  // exclusive private hire only). Staff can still request an invoice for one
+  // via Make-Invoice; it must show the full amount due, not a 50% split.
+  const isTableBooking = x.booking_type === "table_booking"
+  const depositPct = isTableBooking ? null : (x.deposit_pct ?? 50)
   const gross = lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
-  const depositPaid = Math.round((gross * depositPct) / 100 * 100) / 100
+  const depositPaid = Math.round((gross * (depositPct ?? 50)) / 100 * 100) / 100
+  // Never print a due date that's already in the past (e.g. "deposit due two
+  // weeks prior" when the event is tomorrow).
+  const todayB = opts.todayBrisbane
+  const dueLabelIfFuture = (daysBefore: number): string | undefined => {
+    if (!x.event_date) return undefined
+    const due = new Date(Date.UTC(
+      Number(x.event_date.slice(0, 4)),
+      Number(x.event_date.slice(5, 7)) - 1,
+      Number(x.event_date.slice(8, 10)) - daysBefore
+    ))
+    return due.toISOString().slice(0, 10) >= todayB ? fmtDue(x.event_date, daysBefore) : undefined
+  }
+  const tableNotes = [
+    "Full amount due prior to the booking.",
+    "Final numbers and dietaries required 2 days prior to the booking.",
+    "Dietary requirements may incur an additional fee.",
+  ]
   const balanceNotes = [
     "Deposit already received — thank you.",
     "Balance above is the remaining amount due.",
@@ -255,9 +276,9 @@ export async function buildInvoiceFromExtraction(
     depositPct: kind === "balance" ? null : depositPct,
     depositPaidAmount: kind === "balance" ? depositPaid : null,
     todayBrisbane: opts.todayBrisbane,
-    depositDueLabel: kind === "balance" ? undefined : x.event_date ? fmtDue(x.event_date, 14) : undefined,
-    totalDueLabel: x.event_date ? fmtDue(x.event_date, 2) : undefined,
-    notes: kind === "balance" ? balanceNotes : undefined,
+    depositDueLabel: kind === "balance" || depositPct === null ? undefined : dueLabelIfFuture(14),
+    totalDueLabel: dueLabelIfFuture(2),
+    notes: kind === "balance" ? balanceNotes : isTableBooking ? tableNotes : undefined,
   })
   // Persist the editable detail so staff can tweak a field and regenerate.
   await db()
