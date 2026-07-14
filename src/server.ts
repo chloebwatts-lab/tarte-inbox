@@ -20,6 +20,7 @@ import {
   listNeedsLook,
   queueMarkDone,
   queueForward,
+  getQueueThreadView,
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
@@ -467,7 +468,7 @@ app.get("/queue", async (c) => {
       return `<div class="card">
   <div class="who">${esc(it.customerFrom.replace(/<[^>]*>/g, "").trim() || it.customerFrom)}</div>
   <div class="subj">${esc(it.subject)} <span class="cat">${cat}${it.hasInvoice ? " · 💸 invoice attached" : ""}${flags ? " · " + flags : ""}</span></div>
-  <div class="cust">“${esc(it.customerSnippet)}”</div>
+  <div class="cust">“${esc(it.customerSnippet)}” <a class="open" href="/queue/thread?t=${esc(it.threadId)}">Read full conversation →</a></div>
   <form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
     <input type="hidden" name="t" value="${esc(it.threadId)}">
     <textarea name="body" rows="${Math.min(14, Math.max(4, it.draftBody.split("\n").length + 1))}">${esc(it.draftBody)}</textarea>
@@ -488,7 +489,7 @@ app.get("/queue", async (c) => {
       return `<div class="card${it.urgent ? " urgent" : ""}">
   <div class="who">${it.urgent ? "🚨 " : ""}${esc(it.customerFrom.replace(/<[^>]*>/g, "").trim() || it.customerFrom)}</div>
   <div class="subj">${esc(it.subject)} <span class="cat">${cat}</span></div>
-  <div class="cust">“${esc(it.customerSnippet)}”</div>
+  <div class="cust">“${esc(it.customerSnippet)}” <a class="open" href="/queue/thread?t=${esc(it.threadId)}">Read full conversation →</a></div>
   ${it.note ? `<div class="note">🤖 ${esc(it.note)}</div>` : ""}
   <div class="row">
     ${
@@ -529,6 +530,96 @@ ${msg ? `<div class="msg">${esc(msg)}</div>` : ""}
 ${cards || `<div class="empty">No drafts waiting 🎉</div>`}
 <h2>Needs a look (no draft — the agent left it for you)</h2>
 ${lookCards || `<div class="empty">Nothing here either 🎉</div>`}`)
+})
+
+app.get("/queue/thread", async (c) => {
+  if (!portalAuthed(c)) return c.text("Not authorised — open this from your queue link.", 403)
+  const t = c.req.query("t")
+  if (!t) return c.text("missing ?t=<thread id>", 400)
+  const v = await getQueueThreadView(t)
+  if (!v) return c.text("thread not found", 404)
+  const fmtDate = (d: Date): string =>
+    new Date(d).toLocaleString("en-AU", {
+      timeZone: "Australia/Brisbane",
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+  const bubbles = v.messages
+    .map(
+      (m) => `<div class="bubble ${m.ours ? "ours" : "theirs"}">
+  <div class="meta">${esc(m.ours ? "Tarte (us)" : m.from.replace(/<[^>]*>/g, "").trim() || m.from)} · ${esc(fmtDate(m.date))}</div>
+  <div class="text">${esc(m.body)}</div>
+</div>`
+    )
+    .join("\n")
+  let action = ""
+  if (v.draftBody !== null) {
+    action = v.canInlineEdit
+      ? `<h2>Our draft — tweak if needed, then send</h2>
+<form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
+  <input type="hidden" name="t" value="${esc(v.threadId)}">
+  <textarea name="body" rows="${Math.min(16, Math.max(5, v.draftBody.split("\n").length + 1))}">${esc(v.draftBody)}</textarea>
+  <div class="row">
+    <button class="send">Send ✓</button>
+    <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(v.threadId)}" target="_blank">Open in Gmail</a>
+  </div>
+</form>
+<form class="dismissrow" method="post" action="/queue/dismiss" onsubmit="return confirm('Dismiss this? The draft will be deleted and no reply sent.')">
+  <input type="hidden" name="t" value="${esc(v.threadId)}"><button class="dismiss">Dismiss — don't reply</button>
+</form>`
+      : `<h2>Our draft (has an attachment — sends exactly as is)</h2>
+<div class="draftro">${esc(v.draftBody)}</div>
+<form method="post" action="/queue/send" onsubmit="return confirm('Send this reply now?')">
+  <input type="hidden" name="t" value="${esc(v.threadId)}">
+  <div class="row">
+    <button class="send">Send ✓</button>
+    <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(v.threadId)}" target="_blank">Edit in Gmail (keeps attachment)</a>
+  </div>
+</form>
+<form class="dismissrow" method="post" action="/queue/dismiss" onsubmit="return confirm('Dismiss this? The draft will be deleted and no reply sent.')">
+  <input type="hidden" name="t" value="${esc(v.threadId)}"><button class="dismiss">Dismiss — don't reply</button>
+</form>`
+  } else {
+    action = `${v.note ? `<div class="note">🤖 ${esc(v.note)}</div>` : ""}
+<div class="row">
+  ${
+    v.forwardTo
+      ? `<form method="post" action="/queue/forward" onsubmit="return confirm('Forward this to ${esc(v.forwardTo)}?')"><input type="hidden" name="t" value="${esc(v.threadId)}"><button class="send">Forward to ${esc(v.forwardTo.split("@")[0] ?? v.forwardTo)} ✓</button></form>`
+      : ""
+  }
+  <a class="open" href="https://mail.google.com/mail/u/0/#all/${esc(v.threadId)}" target="_blank">Open in Gmail</a>
+  <form method="post" action="/queue/done"><input type="hidden" name="t" value="${esc(v.threadId)}"><button class="done">Done ✓</button></form>
+</div>`
+  }
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(v.subject || "Conversation")}</title>
+<style>
+ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:18px auto;padding:0 14px;color:#3a3a3a;background:#fafcfb}
+ h1{font-size:17px;color:#6e8d85;margin:6px 0 14px} h2{font-size:14px;color:#6e8d85;margin:20px 0 6px}
+ a.back{color:#8a8a8a;font-size:13px;text-decoration:none}
+ .bubble{border-radius:12px;padding:10px 13px;margin:9px 0;max-width:92%}
+ .theirs{background:#fff;border:1px solid #e2e8e6}
+ .ours{background:#e8f1ee;margin-left:auto}
+ .bubble.urgent{border-color:#e8b0a5}
+ .meta{font-size:11.5px;color:#8a9a95;margin-bottom:4px;font-weight:600}
+ .text{white-space:pre-wrap;font-size:14px}
+ textarea{width:100%;box-sizing:border-box;border:1px solid #dfe8e5;border-radius:8px;background:#fff;padding:10px 12px;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#3a3a3a;margin-bottom:8px}
+ .draftro{white-space:pre-wrap;background:#fff;border:1px solid #dfe8e5;border-radius:8px;padding:10px 12px;font-size:14px;margin-bottom:8px}
+ .note{background:#fbf6ea;border-radius:8px;padding:8px 10px;font-size:13px;color:#8a7546;margin:10px 0}
+ .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .row form{margin:0}
+ button{border:0;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer}
+ .send{background:#6e8d85;color:#fff;font-weight:700} .dismiss{background:#f3e9e7;color:#a05c4c}
+ .done{background:#e8f1ee;color:#3f6b5f;font-weight:600}
+ .dismissrow{margin-top:10px}
+ a.open{color:#6e8d85;font-size:13px;font-weight:600;text-decoration:none;padding:10px 4px}
+</style>
+<a class="back" href="/queue">← Back to queue</a>
+<h1>${v.urgent ? "🚨 " : ""}${esc(v.subject || "(no subject)")}</h1>
+${bubbles}
+${action}`)
 })
 
 app.post("/queue/send", async (c) => {

@@ -503,6 +503,57 @@ export async function listNeedsLook(): Promise<NeedsLookItem[]> {
   return items.sort((a, b) => Number(b.urgent) - Number(a.urgent)).slice(0, 25)
 }
 
+// --- Full-conversation view for the queue (girls' feedback: cards alone
+// don't give enough context; they shouldn't need Gmail just to read back).
+
+export interface ThreadViewMessage {
+  from: string
+  date: Date
+  body: string
+  ours: boolean
+}
+
+export interface ThreadView {
+  threadId: string
+  subject: string
+  messages: ThreadViewMessage[]
+  state: string | null
+  draftBody: string | null
+  canInlineEdit: boolean
+  note: string | null
+  forwardTo: string | null
+  urgent: boolean
+}
+
+export async function getQueueThreadView(threadId: string): Promise<ThreadView | null> {
+  const thread = await getThread(threadId)
+  if (!thread.messages.length) return null
+  const helloMail = config().HELLO_MAILBOX.toLowerCase()
+  const row = await getThreadRow(threadId)
+  const isDrafted = row?.state === "drafted" || row?.state === "form_drafted"
+  const messages: ThreadViewMessage[] = thread.messages.map((m) => ({
+    from: m.from,
+    date: m.date,
+    // Dequote so each bubble is just that message, not the whole chain again.
+    body: normalizeForDiff(dequote(m.bodyText)).slice(0, 5000),
+    ours: m.from.toLowerCase().includes(helloMail),
+  }))
+  return {
+    threadId,
+    subject: thread.messages[0]!.subject,
+    messages,
+    state: row?.state ?? null,
+    draftBody: isDrafted ? ((row?.meta["draftBody"] as string | undefined) ?? null) : null,
+    canInlineEdit: isDrafted && Number(row?.meta["attachmentCount"] ?? -1) === 0,
+    note: (row?.meta["note"] as string | undefined) ?? null,
+    forwardTo:
+      row?.meta["forwardSuppressed"] === true
+        ? ((row?.meta["forwardTo"] as string | undefined) ?? null)
+        : null,
+    urgent: row?.state === "urgent",
+  }
+}
+
 /** Staff hit "Done" — they handled it in Gmail/elsewhere. Clear the flag.
  * No-op for unknown thread ids (never invent rows). */
 export async function queueMarkDone(threadId: string): Promise<void> {
@@ -820,11 +871,33 @@ async function handleFormSubmission(
     await applyLabel(thread.threadId, CATEGORY_LABELS.events_tea_garden_high_tea).catch(() => {})
   }
 
-  // Forward-only categories (e.g. job applications → work@): while auto-send
-  // is off, DON'T create a forward draft (they pile up disconnected and never
-  // send). Just label so staff see it in the inbox + digest.
+  // Forward-only categories (e.g. job applications → work@). VERY CLEAR job
+  // applications auto-forward (Chris 2026-07-13); anything fuzzier is labeled
+  // with the one-tap Forward button on the queue. The relay email carries the
+  // parsed applicant details, so forwarding it gives work@ everything.
   const fwdPlaybook = await getPlaybook(result.category)
   if (fwdPlaybook?.forward_to) {
+    if (result.category === "job_applications" && result.confidence >= AUTO_FORWARD_MIN_CONFIDENCE) {
+      console.log(
+        `[forward] auto-forwarding clear job application form (conf=${result.confidence.toFixed(2)}) to ${fwdPlaybook.forward_to}`
+      )
+      const sentId = await sendForward(latest, fwdPlaybook.forward_to, config().HELLO_MAILBOX, "Tarte Inbox")
+      await applyLabel(thread.threadId, AUTO_HANDLED_LABEL)
+      await archiveThread(thread.threadId)
+      await upsertThread({
+        thread_id: thread.threadId,
+        last_message_id: latest.id,
+        state: "forwarded",
+        last_action: "sent_forward",
+        meta: {
+          formSubmission: true,
+          formEmail: form.email,
+          forwardTo: fwdPlaybook.forward_to,
+          sentMessageId: sentId,
+        },
+      })
+      return true
+    }
     await applyLabel(thread.threadId, ACTION_LABEL)
     await upsertThread({
       thread_id: thread.threadId,
@@ -1195,7 +1268,7 @@ export async function processThread(
   // email to that team instead of drafting a reply to the sender.
   const earlyPlaybook = await getPlaybook(result.category)
   if (earlyPlaybook?.forward_to) {
-    return await forwardThread(thread, latest, result.category, earlyPlaybook.forward_to)
+    return await forwardThread(thread, latest, result.category, earlyPlaybook.forward_to, result.confidence)
   }
 
   // --- function-flow shortcut for events ---
@@ -1343,17 +1416,30 @@ function isOurFirstReply(thread: ParsedThread, helloMail: string): boolean {
  * skip drafting a reply to the original sender. Auto-sends when both
  * playbook.auto_send and ENABLE_AUTO_SEND are true; otherwise drafts.
  */
+// Job applications are internal routing (hello@ → work@), not a customer
+// reply, and Chris explicitly authorised auto-forwarding the VERY CLEAR ones
+// (2026-07-13). "Very clear" = classifier confidence at/above this bar;
+// anything fuzzier keeps the one-tap Forward button on the queue.
+const AUTO_FORWARD_MIN_CONFIDENCE = 0.9
+
 async function forwardThread(
   thread: ParsedThread,
   latest: ParsedMessage,
   category: Category,
-  forwardTo: string
+  forwardTo: string,
+  confidence = 0
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   const pb = await getPlaybook(category)
+  const clearJobApplication =
+    category === "job_applications" && confidence >= AUTO_FORWARD_MIN_CONFIDENCE
   const shouldAutoSend =
-    config().ENABLE_AUTO_SEND && pb?.auto_send === true
+    (config().ENABLE_AUTO_SEND && pb?.auto_send === true) || clearJobApplication
   if (shouldAutoSend) {
+    if (clearJobApplication)
+      console.log(
+        `[forward] auto-forwarding clear job application (conf=${confidence.toFixed(2)}) to ${forwardTo}`
+      )
     const sentId = await sendForward(
       latest,
       forwardTo,
