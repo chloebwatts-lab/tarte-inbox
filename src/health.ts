@@ -33,6 +33,10 @@ const FIXES: Record<string, string> = {
     "The email agent has stopped processing the inbox. Emails are NOT being lost — they are waiting in Gmail and staff can reply manually as normal. Message Claude in the Tarte session to investigate.",
   digest:
     "The daily digest email did not go out this morning. Staff should work from the 'Tarte / Action needed' label in Gmail until it's back. Message Claude in the Tarte session.",
+  coverage:
+    "Customers listed above are waiting with NO reply, NO draft and NO flag — the agent missed them. Open each thread in hello@ and reply (or apply the 'Tarte / Action needed' label so it lands on the queue). Then message Claude in the Tarte session so the underlying miss gets fixed — this alert means a real gap, not staff slowness.",
+  stale_drafts:
+    "These drafts have been sitting ready for 2+ days while the customer waits. Open the review queue link in today's digest (or Gmail Drafts), then send or dismiss each one. No Claude needed — this one is a human backlog.",
 }
 
 interface HealthRow {

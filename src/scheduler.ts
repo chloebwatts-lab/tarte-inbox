@@ -105,6 +105,14 @@ async function nbiTick(): Promise<void> {
   } catch (e) {
     console.error("[unread] sweep error:", e instanceof Error ? e.message : e)
   }
+  // Coverage sentinel: the end-to-end "no customer left unanswered" invariant.
+  // Independent of the pipeline by design — alerts via the watchdog.
+  try {
+    const { runCoverageAudit } = await import("./coverage.js")
+    await runCoverageAudit()
+  } catch (e) {
+    console.error("[coverage] audit error:", e instanceof Error ? e.message : e)
+  }
 }
 
 export function startScheduler(): void {

@@ -709,7 +709,7 @@ const SUPPLIER_SENDER_PATTERNS = [
   /marrow ?meats/i,
   /\bfermex\b/i,
   /\bjoval\b/i,
-  /\bparamount\b/i,
+  /paramount ?liquor|\bparamount\b/i,
   /produce ?oz/i,
   /gold ?coast ?eggs/i,
   /\bbreadtop\b/i,
@@ -717,7 +717,7 @@ const SUPPLIER_SENDER_PATTERNS = [
   /\beustralis\b/i,
 ]
 
-function isLikelySupplier(from: string): boolean {
+export function isLikelySupplier(from: string): boolean {
   return SUPPLIER_SENDER_PATTERNS.some((p) => p.test(from))
 }
 
