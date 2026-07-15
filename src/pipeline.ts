@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
   getThread,
   listInboxThreads,
+  listAllInboxThreads,
   listThreadsByLabel,
   listSpamThreads,
   unspamThread,
@@ -126,14 +127,24 @@ export async function runTick(): Promise<{ seen: number; acted: number }> {
   let seen = 0
   let acted = 0
   try {
-    const ids = await listInboxThreads()
-    seen = ids.length
-    for (const id of ids) {
+    const items = await listAllInboxThreads()
+    seen = items.length
+    // Cheap change-detection: skip threads whose Gmail historyId matches what
+    // we stored last time we looked — no per-thread fetch needed. Threads with
+    // no stored/changed historyId fall through to a full processThread.
+    const { rows: known } = await db().query<{ thread_id: string; last_history_id: string | null }>(
+      `SELECT thread_id, last_history_id FROM inbox_threads WHERE thread_id = ANY($1)`,
+      [items.map((i) => i.id)]
+    )
+    const lastHistory = new Map(known.map((r) => [r.thread_id, r.last_history_id]))
+    for (const item of items) {
+      const stored = lastHistory.get(item.id)
+      if (stored && item.historyId && stored === item.historyId) continue
       try {
-        const acted_ = await processThread(id)
+        const acted_ = await processThread(item.id)
         if (acted_) acted++
       } catch (e) {
-        console.error(`[pipeline] thread ${id} failed:`, e)
+        console.error(`[pipeline] thread ${item.id} failed:`, e)
       }
     }
     await finishRun(runId, { threads_seen: seen, threads_acted: acted })
@@ -1076,8 +1087,18 @@ export async function processThread(
     return true
   }
 
-  // Skip if nothing new since last time
-  if (existing?.last_message_id === latest.id) return false
+  // Skip if nothing new since last time — but persist the freshest historyId
+  // so the paginated tick can skip this thread without re-fetching it.
+  if (existing?.last_message_id === latest.id) {
+    if (thread.historyId && existing.last_history_id !== thread.historyId) {
+      await upsertThread({
+        thread_id: threadId,
+        last_message_id: latest.id,
+        last_history_id: thread.historyId,
+      })
+    }
+    return false
+  }
 
   // Skip if no human-facing message (e.g. fully internal/automated)
   if (fromUs) {

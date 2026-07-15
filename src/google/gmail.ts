@@ -118,6 +118,38 @@ export async function listInboxThreads(
   return (r.data.threads ?? []).map((t) => t.id!).filter(Boolean)
 }
 
+export interface InboxThreadListItem {
+  id: string
+  historyId: string | null
+}
+
+/** EVERY active inbox thread, paginated. A single 50-thread page silently hid
+ * the rest of the inbox from the tick — customers past the cutoff (Brighid,
+ * 2026-07-15) were never processed at all. historyId comes free in the list
+ * response and lets the tick skip unchanged threads without fetching them. */
+export async function listAllInboxThreads(
+  query = "in:inbox newer_than:30d -category:promotions",
+  cap = 500
+): Promise<InboxThreadListItem[]> {
+  const g = await gmail()
+  const out: InboxThreadListItem[] = []
+  let pageToken: string | undefined
+  do {
+    const r = await g.users.threads.list({
+      userId: "me",
+      q: query,
+      maxResults: 100,
+      pageToken,
+    })
+    for (const t of r.data.threads ?? []) {
+      if (t.id) out.push({ id: t.id, historyId: t.historyId ?? null })
+    }
+    pageToken = r.data.nextPageToken ?? undefined
+  } while (pageToken && out.length < cap)
+  if (out.length >= cap) console.warn(`[gmail] inbox listing hit the ${cap}-thread cap — oldest threads may be missed`)
+  return out
+}
+
 /** Thread IDs currently in the Spam folder (genuine enquiries occasionally
  * land here — e.g. function requests). */
 export async function listSpamThreads(query = "in:spam newer_than:7d"): Promise<string[]> {
