@@ -1211,11 +1211,16 @@ export async function processThread(
         )
       }
     }
+    // The customer wrote AGAIN on a thread a human owns — backing off silently
+    // made these vanish for days (Miranda, 2026-07-15: 5 days before her
+    // Saturday event). Flag the queue so the owner is reminded; still no draft.
+    await applyLabel(threadId, ACTION_LABEL).catch(() => {})
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
       state: "handed_off",
       last_action: "skipped_handoff",
+      meta: { note: "Customer replied on a handed-off thread — the teammate it was handed to needs to respond." },
     })
     return true
   }

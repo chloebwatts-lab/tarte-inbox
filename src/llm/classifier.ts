@@ -65,7 +65,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
   urgent_escalation:
     "URGENT: food safety / illness after eating with us, injury on premises, allergy incident, threat of legal action or media, anything where a slow or wrong reply does real damage.",
   no_action:
-    "Thread is finished and needs no reply: a bare 'thanks!' / 'see you then' closure, an FYI with no question, a vendor notification already dealt with.",
+    "Thread is finished and needs no reply: a bare 'thanks!' / 'see you then' closure, an FYI with no question, a vendor notification already dealt with. NEVER no_action when the customer is waiting on ANYTHING from our side (a promised follow-up, an answer, a confirmation) — a passive hold where we owe the next move is needs_human, not no_action.",
   needs_human:
     "Doesn't fit other categories or is ambiguous / sensitive. Default for low confidence.",
 }
@@ -95,7 +95,7 @@ Rules:
 - Illness after dining, food safety, injury, allergy incident, legal/media threat → urgent_escalation, even at low confidence. This OVERRIDES the low-confidence rule below.
 - Review notification emails from Google / Tripadvisor / Yelp / etc → reviews.
 - Pitch / agency / SEO / cold offer → marketing_cold_outreach. Be liberal here; default these to low-priority.
-- A thread that has clearly concluded (bare thanks, no question, nothing owed) → no_action.
+- A thread that has clearly concluded (bare thanks, no question, nothing owed) → no_action. But if WE owe the customer anything — a promised follow-up, an unanswered question anywhere in the thread, a "we'll get back to you" — it is NOT concluded: use needs_human.
 - When in doubt, prefer needs_human over a wrong confident answer.
 - Confidence under 0.6 → also coerce category to needs_human (EXCEPT urgent_escalation, which sticks).`
 
