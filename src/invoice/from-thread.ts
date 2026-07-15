@@ -30,6 +30,10 @@ export interface InvoiceExtraction {
   add_ons: Array<{ description: string; unit_price: number; per_person: boolean }>
   confidence: number
   missing: string[] // what's still needed before invoicing, if any
+  // Money actually received against this booking (staff-entered on the edit
+  // page or bank-verified). NOT set by the thread extractor — rebuilds must
+  // carry it forward from the stored editable detail, never re-derive it.
+  amount_paid?: number | null
 }
 
 const SYSTEM = `You read an email thread for Tarte (a Queensland hospitality venue). A deposit invoice is raised ONLY for EXCLUSIVE PRIVATE HIRE — a whole-venue hire or a private styled function (baby shower / hens / private high tea or lunch in The Hideout or a private Tea Garden section). A plain group TABLE booking (a group just wanting a table for breakfast / brunch / lunch, e.g. the set brunch package) takes NO deposit and is NEVER invoiced.
@@ -258,6 +262,15 @@ export async function buildInvoiceFromExtraction(
     "Balance due 2 days prior to the event start time.",
     "Final numbers and dietaries required 2 days prior to the event.",
   ]
+  const amountPaid =
+    typeof x.amount_paid === "number" && x.amount_paid > 0
+      ? Math.round(x.amount_paid * 100) / 100
+      : null
+  const fullyPaid = amountPaid != null && amountPaid >= gross - 0.005
+  const paidNotes = [
+    "Paid in full — thank you. Nothing owing.",
+    "Final numbers and dietaries required 2 days prior to the event.",
+  ]
   const gen = await generateInvoice({
     bookingId: opts.bookingId,
     threadId: opts.threadId,
@@ -273,12 +286,14 @@ export async function buildInvoiceFromExtraction(
     },
     lineItems,
     kind,
-    depositPct: kind === "balance" ? null : depositPct,
-    depositPaidAmount: kind === "balance" ? depositPaid : null,
+    depositPct: kind === "balance" || fullyPaid ? null : depositPct,
+    depositPaidAmount: kind === "balance" ? amountPaid ?? depositPaid : null,
+    amountPaid,
     todayBrisbane: opts.todayBrisbane,
-    depositDueLabel: kind === "balance" || depositPct === null ? undefined : dueLabelIfFuture(14),
-    totalDueLabel: dueLabelIfFuture(2),
-    notes: kind === "balance" ? balanceNotes : isTableBooking ? tableNotes : undefined,
+    depositDueLabel:
+      kind === "balance" || depositPct === null || fullyPaid ? undefined : dueLabelIfFuture(14),
+    totalDueLabel: fullyPaid ? undefined : dueLabelIfFuture(2),
+    notes: fullyPaid ? paidNotes : kind === "balance" ? balanceNotes : isTableBooking ? tableNotes : undefined,
   })
   // Persist the editable detail so staff can tweak a field and regenerate.
   await db()

@@ -434,6 +434,29 @@ export async function deleteThreadDrafts(threadId: string): Promise<number> {
   }
 }
 
+/** The CURRENT text of the thread's pending draft, as it sits in Gmail — i.e.
+ * including any hand-edits staff made after we created it. Invoice rebuilds
+ * use this so regenerating an attachment never throws away a staffer's words.
+ * Null when the thread has no pending draft. */
+export async function getThreadDraftBody(threadId: string): Promise<string | null> {
+  try {
+    const g = await gmail()
+    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
+    const d = (r.data.drafts ?? []).find((d) => d.message?.threadId === threadId)
+    if (!d?.id) return null
+    const full = await g.users.drafts.get({ userId: "me", id: d.id, format: "full" })
+    const { text, html } = extractBody(full.data.message?.payload ?? undefined)
+    const body = (text || stripHtml(html)).trim()
+    return body || null
+  } catch (e) {
+    console.warn(
+      `[gmail] could not read pending draft for thread ${threadId}:`,
+      e instanceof Error ? e.message : e
+    )
+    return null
+  }
+}
+
 export async function createInThreadDraft(
   ctx: ReplyContext,
   bodyText: string,

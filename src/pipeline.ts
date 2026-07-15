@@ -15,6 +15,7 @@ import {
   archiveThread,
   deleteDraft,
   deleteThreadDrafts,
+  getThreadDraftBody,
   createInThreadDraft,
   createStandaloneDraft,
   createStandaloneDraftWithThread,
@@ -1744,33 +1745,45 @@ async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessag
     (x.per_person_price ?? 0) * (x.guests ?? 0)
   )
   const depositPaid = Math.round((gross * (x.deposit_pct ?? 50)) / 100 * 100) / 100
-  const balance = Math.round((gross - depositPaid) * 100) / 100
 
   // Try to VERIFY the payment against the Xero bank feed (best-effort). The
   // customer's word alone is never treated as proof — if we can't match it, we
-  // flag a human and don't claim receipt.
+  // flag a human and don't claim receipt. Customers routinely pay either the
+  // deposit OR the whole invoice in one hit — check the full total first so a
+  // full payer is never mis-billed for a "remaining balance" they don't owe.
   let verified = false
   let matchedTxnId: string | null = null
   let matchedRef: string | null = null
+  let paidAmount = depositPaid
   const bankMatchReady = await xeroBankMatchReady()
   if (bankMatchReady) {
     try {
-      const match = await findIncomingPayment({
-        amount: depositPaid,
-        reference: depositInvoiceNumber,
-        customerName: x.customer_name,
-      })
+      const match =
+        (await findIncomingPayment({
+          amount: gross,
+          reference: depositInvoiceNumber,
+          customerName: x.customer_name,
+        })) ??
+        (await findIncomingPayment({
+          amount: depositPaid,
+          reference: depositInvoiceNumber,
+          customerName: x.customer_name,
+        }))
       if (match) {
         verified = true
         matchedTxnId = match.bankTransactionId
         matchedRef = match.reference
+        paidAmount = match.total
       }
     } catch (e) {
       console.error("[xero] bank match failed:", e instanceof Error ? e.message : e)
     }
   }
+  const balance = Math.max(0, Math.round((gross - paidAmount) * 100) / 100)
+  const paidInFull = verified && balance <= 0
 
-  if (booking) await updateBooking(booking.id, { state: "deposit_paid" }).catch(() => {})
+  if (booking)
+    await updateBooking(booking.id, { state: paidInFull ? "paid" : "deposit_paid" }).catch(() => {})
 
   // Record the payment claim/verification (idempotent per thread+invoice).
   await db()
@@ -1782,7 +1795,7 @@ async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessag
         thread.threadId,
         depositInvoiceNumber,
         booking?.id ?? null,
-        depositPaid,
+        paidAmount,
         verified ? "verified" : bankMatchReady ? "unmatched" : "claimed",
         matchedTxnId,
         matchedRef,
@@ -1790,17 +1803,26 @@ async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessag
     )
     .catch((e) => console.error("[payments] record failed:", e instanceof Error ? e.message : e))
 
-  const built = await buildInvoiceFromExtraction(x, {
-    bookingId: booking?.id ?? null,
-    threadId: thread.threadId,
-    todayBrisbane: today,
-    kind: "balance",
-  })
+  // Only a bank-verified amount goes on the invoice as money received — an
+  // unverified claim keeps the pct-derived deposit presentation as before.
+  const built = await buildInvoiceFromExtraction(
+    verified ? { ...x, amount_paid: paidAmount } : x,
+    {
+      bookingId: booking?.id ?? null,
+      threadId: thread.threadId,
+      todayBrisbane: today,
+      kind: "balance",
+    }
+  )
 
   // Use the function category that fits the thread (for playbook voice).
   const category: Category = "events_beach_house_functions"
   const playbook = await getPlaybook(category)
-  const instruction = verified
+  const instruction = paidInFull
+    ? `The customer has paid and we have CONFIRMED their payment of $${paidAmount.toFixed(2)} in our bank records — that settles the invoice IN FULL. Nothing is owing.\n` +
+      `Attached is their PAID invoice (${built.invoiceNumber}) showing paid in full, for their records.\n` +
+      `Drafting rule: warm, short reply. Thank them, confirm we've received their payment in full and there's nothing more to pay, and that the attached copy is for their records. Don't re-list every line. A few sentences.`
+    : verified
     ? `The customer says they paid their deposit AND we have CONFIRMED a matching payment in our bank records — so you can warmly confirm we've received it.\n` +
       `Attached is their BALANCE invoice (${built.invoiceNumber}) for the remaining $${balance.toFixed(2)}, due before the event.\n` +
       `Drafting rule: warm, short reply. Confirm we've received their deposit with thanks, and that the attached invoice covers the remaining balance payable before the day. Don't re-list every line. A few sentences.`
@@ -1821,14 +1843,14 @@ async function maybeHandleDepositPaid(thread: ParsedThread, latest: ParsedMessag
     bcc: INVOICE_BCC, invoiceCreated: true,
     extraAttachments: [
       {
-        filename: `${built.invoiceNumber} - ${safeName} (Balance).pdf`,
+        filename: `${built.invoiceNumber} - ${safeName}${paidInFull ? " (Paid)" : " (Balance)"}.pdf`,
         contentType: "application/pdf",
         data: built.pdf,
       },
     ],
   })
   console.log(
-    `[invoice] balance invoice ${built.invoiceNumber} drafted for thread ${thread.threadId} ($${balance}) — payment ${verified ? "VERIFIED in Xero" : "unverified (human to check)"}`
+    `[invoice] ${paidInFull ? "paid-in-full" : "balance"} invoice ${built.invoiceNumber} drafted for thread ${thread.threadId} ($${balance} owing) — payment ${verified ? "VERIFIED in Xero" : "unverified (human to check)"}`
   )
   return true
 }
@@ -1847,6 +1869,11 @@ export interface InvoiceEdits {
   time_label?: string
   dietaries?: string
   deposit_pct?: number
+  // Money received against the invoice: 0 clears it, a partial amount shows
+  // "Payment received" + remaining balance, >= total renders PAID IN FULL.
+  amount_paid?: number
+  // Shortcut: set amount_paid to the recalculated invoice total.
+  paid_in_full?: boolean
   // When provided, REPLACES the stored extras wholesale — the form submits the
   // full desired list, so staff can change, remove, or add lines freely.
   add_ons?: Array<{ description: string; unit_price: number; per_person: boolean }>
@@ -2019,7 +2046,15 @@ export async function regenerateInvoiceFromEdits(
     time_label: edits.time_label ?? base.time_label,
     dietaries: edits.dietaries ?? base.dietaries,
     deposit_pct: edits.deposit_pct ?? base.deposit_pct,
+    amount_paid: edits.amount_paid ?? base.amount_paid,
     add_ons: edits.add_ons ?? base.add_ons,
+  }
+  if (edits.paid_in_full) {
+    const gross = x.add_ons.reduce(
+      (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
+      (x.per_person_price ?? 0) * (x.guests ?? 0)
+    )
+    x.amount_paid = Math.round(gross * 100) / 100
   }
 
   const thread = await getThread(rec.thread_id)
@@ -2057,9 +2092,14 @@ export async function regenerateInvoiceFromEdits(
     }).catch((e) => console.error("[invoice] sibling rebuild failed:", e instanceof Error ? e.message : e))
   }
 
-  // Preserve the existing email text; just swap the attachment.
+  // Preserve the existing email text; just swap the attachment. Read the LIVE
+  // Gmail draft first — staff hand-edit draft wording, and regenerating the
+  // PDF must never throw those words away (Chloe, 2026-07-15).
   const row = await getThreadRow(rec.thread_id)
-  const prevBody = (row?.meta?.["draftBody"] as string | undefined) ?? ""
+  const prevBody =
+    (await getThreadDraftBody(rec.thread_id)) ??
+    (row?.meta?.["draftBody"] as string | undefined) ??
+    ""
   const body =
     prevBody ||
     `Hi ${x.customer_name ?? "there"},\n\nPlease find your updated invoice attached.\n\nKind Regards,\nTarte Management`
@@ -2343,6 +2383,15 @@ export async function processInvoiceRebuild(
   // The customer's address lives in the From header, not always in the body
   // text the extractor reads — don't let a missing body email block invoicing.
   if (!x.customer_email) x.customer_email = extractEmail(customerMsg.from) || null
+  // Payments aren't part of the thread extraction — carry forward what staff
+  // or the bank match already recorded so a rebuild never "unpays" an invoice.
+  const prior = await db().query<{ editable: InvoiceExtraction | null }>(
+    `SELECT editable FROM inbox_invoices
+      WHERE thread_id = $1 AND editable IS NOT NULL ORDER BY id DESC LIMIT 1`,
+    [id]
+  )
+  const priorPaid = prior.rows[0]?.editable?.amount_paid
+  if (typeof priorPaid === "number" && priorPaid > 0) x.amount_paid = priorPaid
 
   // No invoice yet → build the first one.
   if (kinds.length === 0) {
@@ -2406,23 +2455,32 @@ export async function processInvoiceRebuild(
     (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
     (x.per_person_price ?? 0) * (x.guests ?? 0)
   )
-  const d = await draft({
-    category,
-    playbook,
-    threadHistory: thread.messages.map(toHistoryItem),
-    customerName: x.customer_name ?? firstName(customerMsg.from),
-    customExtras: [
-      {
-        role: "user",
-        content:
-          `The booking details have changed and we've UPDATED their invoice (${attach.invoiceNumber}) — it's ATTACHED as a PDF.\n` +
-          `Current details: ${x.guests ?? "?"} guests${x.event_date ? `, ${x.event_date}` : ""}${
-            x.time_label ? `, ${x.time_label}` : ""
-          }; total $${total.toFixed(2)}.\n` +
-          `Drafting rule: warm, short reply. Let them know we've updated their invoice to reflect the change and attached the new copy. Don't re-list every line. A couple of sentences.`,
-      },
-    ],
-  })
+  // A staffer may have already written or hand-edited the reply — the label
+  // means "fix the invoice", not "rewrite my email". Keep their words and just
+  // swap the attachment; only compose fresh text when no draft is pending.
+  const existingBody = await getThreadDraftBody(id)
+  let d: DraftResult
+  if (existingBody) {
+    d = { body: existingBody, confidence: 0.5, flags: ["needs_human"] }
+  } else {
+    d = await draft({
+      category,
+      playbook,
+      threadHistory: thread.messages.map(toHistoryItem),
+      customerName: x.customer_name ?? firstName(customerMsg.from),
+      customExtras: [
+        {
+          role: "user",
+          content:
+            `The booking details have changed and we've UPDATED their invoice (${attach.invoiceNumber}) — it's ATTACHED as a PDF.\n` +
+            `Current details: ${x.guests ?? "?"} guests${x.event_date ? `, ${x.event_date}` : ""}${
+              x.time_label ? `, ${x.time_label}` : ""
+            }; total $${total.toFixed(2)}.\n` +
+            `Drafting rule: warm, short reply. Let them know we've updated their invoice to reflect the change and attached the new copy. Don't re-list every line. A couple of sentences.`,
+        },
+      ],
+    })
+  }
   if (!d.body) {
     await flagDraftFailure(thread, customerMsg, category)
     return "unmet"

@@ -314,6 +314,9 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
  ${field("Time", "time_label", x["time_label"])}
  ${field("Dietaries", "dietaries", x["dietaries"])}
  ${field("Deposit % (table bookings never show a deposit)", "deposit_pct", x["deposit_pct"], "number")}
+ <h2>Payment received</h2>
+ ${field("Amount paid so far ($) — shows on the invoice as payment received; 0 clears it", "amount_paid", x["amount_paid"], "number")}
+ <label class="lchk" style="font-size:13px;margin:8px 0"><input type="checkbox" name="paid_full"> Paid in full — sets amount paid to the invoice total, and the invoice shows PAID IN FULL</label>
  <h2>Line 1 — the package</h2>
  ${field("Description", "package_name", x["package_name"])}
  <div class="line">
@@ -500,6 +503,8 @@ app.post("/invoice/edit", async (c) => {
     guests: num("guests"),
     per_person_price: num("per_person_price"),
     deposit_pct: num("deposit_pct"),
+    amount_paid: num("amount_paid"),
+    paid_in_full: form["paid_full"] !== undefined,
     add_ons: addOns,
   }
   let msg: string
@@ -523,10 +528,21 @@ app.post("/invoice/edit", async (c) => {
         total += amt
         lines.push(`${esc(a.description ?? "")}: ${qty} × $${a.unit_price} = $${amt.toFixed(2)}`)
       }
+      const paidAmt = Number(e2["amount_paid"] ?? 0)
+      let payLine = ""
+      if (paidAmt > 0) {
+        const owing = Math.max(0, Math.round((total - paidAmt) * 100) / 100)
+        payLine =
+          `<br>Payment received: -$${paidAmt.toFixed(2)}` +
+          (owing <= 0
+            ? `<br><b>PAID IN FULL — nothing owing</b>`
+            : `<br><b>Balance due: $${owing.toFixed(2)}</b>`)
+      }
       msg =
         `✅ Regenerated <b>${esc(okNumber)}</b> — the updated PDF is on the draft in Gmail, ready to review and send.<br><br>` +
         lines.join("<br>") +
-        `<br><b>Total: $${total.toFixed(2)}</b>`
+        `<br><b>Total: $${total.toFixed(2)}</b>` +
+        payLine
     } else {
       msg = `⚠️ Not updated: ${esc(result.error)}`
     }

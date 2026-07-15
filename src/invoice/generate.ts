@@ -97,6 +97,10 @@ export interface InvoiceInput {
   // For a balance invoice: how much deposit was already paid (subtracted from
   // the total to show the balance now due).
   depositPaidAmount?: number | null
+  // Actual money received against this invoice (bank-verified or staff-entered).
+  // Overrides the pct-derived deposit maths: partial → "Payment received" +
+  // remaining balance due; >= total → renders as PAID IN FULL (a receipt).
+  amountPaid?: number | null
   todayBrisbane: string // YYYY-MM-DD
   // Optional explicit due dates (else derived). ISO yyyy-mm-dd or label.
   depositDueLabel?: string
@@ -244,6 +248,18 @@ export function renderInvoicePdf(p: {
     const R = 545 // right edge
     const W = R - L
 
+    // Money actually received. Staff-entered/bank-verified amountPaid wins;
+    // a balance invoice with no recorded amount falls back to the pct-derived
+    // deposit so old flows render unchanged.
+    const totalDue = p.gross
+    const pctDeposit = input.depositPct
+      ? Math.round(((totalDue * input.depositPct) / 100) * 100) / 100
+      : null
+    const received = Math.round(
+      (input.amountPaid ?? (input.kind === "balance" ? input.depositPaidAmount ?? pctDeposit ?? 0 : 0)) * 100
+    ) / 100
+    const fullyPaid = received > 0 && received >= Math.round(totalDue * 100) / 100 - 0.005
+
     // ---- Header band ----
     if (p.logo) {
       try {
@@ -259,8 +275,10 @@ export function renderInvoicePdf(p: {
       .fontSize(22)
       .font("Helvetica-Bold")
       .text(cfg.gstRegistered ? "TAX INVOICE" : "INVOICE", R - 220, 50, { width: 220, align: "right" })
-    if (input.kind === "balance") {
+    if (fullyPaid) {
       // Small tag in the gap under the logo (logo ends ~114, rule at 128).
+      doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("PAID IN FULL — NOTHING OWING", L, 117)
+    } else if (input.kind === "balance") {
       doc.fillColor(SAGE_DARK).fontSize(9).font("Helvetica-Bold").text("BALANCE INVOICE — REMAINING AMOUNT DUE", L, 117)
     }
     doc.fillColor(MUTED).fontSize(9.5).font("Helvetica")
@@ -355,19 +373,28 @@ export function renderInvoicePdf(p: {
       doc.fillColor(opts.sage ? SAGE_DARK : INK).text(val, tX + labelW, y, { width: R - tX - labelW, align: "right" })
       y += opts.size ? opts.size + 8 : 17
     }
-    if (input.kind === "balance") {
-      // Balance invoice: full total, less the deposit already paid, leaving the
-      // remaining amount now due.
-      const paid = input.depositPaidAmount ?? deposit ?? 0
-      const remaining = Math.round((total - paid) * 100) / 100
+    if (received > 0) {
+      // Money has come in: full total, less the payment received, leaving the
+      // remaining amount now due — $0.00 and a PAID stamp when settled.
+      const remaining = Math.max(0, Math.round((total - received) * 100) / 100)
       totalRow(cfg.gstRegistered ? "Total (incl. GST)" : "Total", fmtAud(total))
-      totalRow("Deposit received", `- ${fmtAud(paid)}`)
+      totalRow(
+        input.kind === "balance" && !fullyPaid ? "Deposit received" : "Payment received",
+        `- ${fmtAud(received)}`
+      )
       doc.moveTo(tX, y + 2).lineTo(R, y + 2).lineWidth(1).strokeColor(SAGE).stroke()
       y += 8
-      totalRow("Balance due now", fmtAud(remaining), { bold: true, sage: true, size: 12 })
+      totalRow(fullyPaid ? "Balance due" : "Balance due now", fmtAud(remaining), { bold: true, sage: true, size: 12 })
       if (cfg.gstRegistered) {
         doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Total includes GST ${fmtAud(gst)}`, tX, y, { width: R - tX, align: "right" })
         y += 14
+      }
+      if (fullyPaid) {
+        y += 6
+        doc.roundedRect(tX, y, R - tX, 32, 6).lineWidth(1.5).strokeColor(SAGE_DARK).stroke()
+        doc.fillColor(SAGE_DARK).fontSize(13).font("Helvetica-Bold")
+          .text("PAID IN FULL — THANK YOU", tX, y + 10, { width: R - tX, align: "center" })
+        y += 44
       }
     } else {
       if (deposit != null) {
@@ -383,8 +410,8 @@ export function renderInvoicePdf(p: {
       }
     }
 
-    // ---- Due dates ----
-    if (input.depositDueLabel || input.totalDueLabel) {
+    // ---- Due dates ---- (nothing is due on a settled invoice)
+    if (!fullyPaid && (input.depositDueLabel || input.totalDueLabel)) {
       y += 6
       doc.fontSize(9).fillColor(MUTED).font("Helvetica")
       if (input.depositDueLabel) {
@@ -398,12 +425,17 @@ export function renderInvoicePdf(p: {
       y += 30
     }
 
-    // ---- Payment details (two columns) ----
+    // ---- Payment details (two columns; settled invoices need none) ----
     y += 10
     doc.moveTo(L, y).lineTo(R, y).lineWidth(0.5).strokeColor(RULE).stroke()
     y += 14
-    doc.fillColor(SAGE_DARK).fontSize(10).font("Helvetica-Bold").text("PAYMENT DETAILS", L, y)
+    doc.fillColor(SAGE_DARK).fontSize(10).font("Helvetica-Bold").text(fullyPaid ? "PAYMENT" : "PAYMENT DETAILS", L, y)
     y += 16
+    if (fullyPaid) {
+      doc.fillColor(INK).fontSize(9.5).font("Helvetica")
+      doc.text("Payment received in full with thanks — no further payment is required.", L, y, { width: W })
+      y = doc.y + 18
+    } else {
     const colY = y
     doc.fillColor(INK).fontSize(9.5).font("Helvetica")
     doc.text(
@@ -428,6 +460,7 @@ export function renderInvoicePdf(p: {
     )
     // Advance below the TALLER of the two columns (bank block is taller).
     y = Math.max(bankBottom, doc.y) + 18
+    }
 
     // ---- Notes / terms ----
     const notes = input.notes ?? DEFAULT_NOTES
