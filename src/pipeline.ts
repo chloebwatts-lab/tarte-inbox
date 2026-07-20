@@ -115,6 +115,9 @@ export const INVOICE_SENT_LABEL = "Tarte / Invoice sent"
 // Squarespace takeaway high tea orders — labelled + a pickup reminder goes on
 // the staff calendar so the kitchen preps for the date.
 export const TAKEAWAY_HT_LABEL = "Tarte / Takeaway High Tea"
+// Table bookings of 12+ guests — foldered so staff can eyeball every large
+// group at a glance (these need a set menu Fri-Sun).
+export const LARGE_BOOKING_LABEL = "Tarte / 12+ booking"
 
 // Only archive LLM-classified noise when the classifier is sure. Regex-matched
 // noreply receipts archive unconditionally.
@@ -2935,7 +2938,7 @@ async function handleFunctionEnquiry(
   // does mean we ask for another date.
   const noSlotsRule =
     venue === "tea_garden"
-      ? "DO NOT tell them we have no availability — we can host this group. Warmly confirm we'd love to have them on the date and time they asked for. If it's a group dining/table booking over 12 on a weekend, point them to our Set Brunch Package (from $40pp, details in the attached functions pack) — and DON'T mention a deposit for a table booking. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
+      ? "DO NOT tell them we have no availability — we can host this group. Warmly confirm we'd love to have them on the date and time they asked for. If it's a group dining/table booking of 12 or more on any day EXCEPT Monday to Thursday (so Friday, Saturday or Sunday), a set menu is required: point them to our Set Brunch Package (from $40pp, details in the attached functions pack), lay out the two options and ask which suits them best — and DON'T mention a deposit for a table booking. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
       : "We don't have the Hideout free on the date(s) they gave. Apologise briefly and ask for an alternative date window, don't make them spell out the same dates again."
   // Keep noSlotsRule referenced (Tea Garden accommodation phrasing) without
   // it claiming specific availability.
@@ -2972,13 +2975,23 @@ async function handleFunctionEnquiry(
           `${dateBlock}\n` +
           `Slots:\n${slotsBlock}\n` +
           nbiContext +
-          `Deposit rule: a $${FUNCTION_DEPOSIT_AUD} deposit applies ONLY to EXCLUSIVE PRIVATE HIRE (whole-venue hire, or a private styled function like a baby shower / hens in the Hideout). A group that just wants a TABLE for breakfast / brunch / lunch (even 15+ people) is a normal dining booking — NO deposit, do not mention one; just confirm the table, the set brunch menu for 12+, and take their final numbers and dietaries. Judge which this is from what the customer actually asked for; when unsure, treat it as a table booking and don't raise a deposit.\n` +
+          `Deposit rule: a $${FUNCTION_DEPOSIT_AUD} deposit applies ONLY to EXCLUSIVE PRIVATE HIRE (whole-venue hire, or a private styled function like a baby shower / hens in the Hideout). A group that just wants a TABLE for breakfast / brunch / lunch (even 15+ people) is a normal dining booking — NO deposit, do not mention one; just confirm the table, the set brunch menu for tables of 12 or more (required Friday to Sunday; not needed Monday to Thursday), and take their final numbers and dietaries. Judge which this is from what the customer actually asked for; when unsure, treat it as a table booking and don't raise a deposit.\n` +
           `\nDrafting rule: ${draftingRules}\n`,
       },
     ],
   })
   if (!d.body) return await flagDraftFailure(thread, latest, category)
-  await deliver(thread, latest, d, category, playbook)
+  // Tables of 12+ get their own folder (so staff can eyeball every large group
+  // at a glance) and the functions pack in hand (it holds the set-menu options).
+  // bookings_dine_in has no default attachment, so attach it here on our first
+  // reply when the group is large enough to need a set menu.
+  const large = (extracted.pax ?? 0) >= 12
+  if (large) await applyLabel(thread.threadId, LARGE_BOOKING_LABEL).catch(() => {})
+  const setMenuAttachments =
+    large && isOurFirstReply(thread, config().HELLO_MAILBOX)
+      ? await loadAttachments(["functions-events-packages.pdf"])
+      : []
+  await deliver(thread, latest, d, category, playbook, { extraAttachments: setMenuAttachments })
   return true
 }
 

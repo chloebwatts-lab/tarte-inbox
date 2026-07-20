@@ -169,7 +169,7 @@ const SEEDS: FaqSeed[] = [
         question:
           "Do groups over 12 in the restaurant need a set menu?",
         answer:
-          "Yes - groups of more than 12 dining in the restaurant on weekends are required to go with a set menu. This helps deliver a smooth service for the group and other patrons during peak service times.",
+          "Yes - tables of 12 or more are required to go with a set menu on any day except Monday to Thursday (so it applies Friday, Saturday and Sunday). This helps deliver a smooth service for the group and other patrons during peak service times. Monday to Thursday, a group of 12 or more can order off the regular menu.",
       },
     ],
   },
