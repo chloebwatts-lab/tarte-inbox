@@ -187,6 +187,35 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
       .map((v) => `${v.from} — "${v.subject}" — waiting ${v.ageHours}h`)
       .join("; ") + (list.length > 10 ? ` (+${list.length - 10} more)` : "")
 
+  // Second reconcile pass: threads still CARRYING the Missed label that are no
+  // longer in the inbox scan. Staff archiving a thread is their natural "dealt
+  // with" action (same philosophy as trash = dismissed) — without this pass the
+  // label sticks to archived threads forever and the folder silts up with
+  // handled mail. Also catches threads that aged past the 30d scan window.
+  if (missedLabelId) {
+    const scannedSet = new Set(ids)
+    try {
+      let lp: string | undefined
+      do {
+        const r = await g.users.threads.list({
+          userId: "me",
+          labelIds: [missedLabelId],
+          maxResults: 100,
+          pageToken: lp,
+        })
+        for (const t of r.data.threads ?? []) {
+          if (!t.id || scannedSet.has(t.id)) continue
+          if (!opts.dryRun)
+            await g.users.threads.modify({ userId: "me", id: t.id, requestBody: { removeLabelIds: [missedLabelId] } })
+          missedCleared++
+        }
+        lp = r.data.nextPageToken ?? undefined
+      } while (lp)
+    } catch (e) {
+      console.warn(`[coverage] missed-label archive sweep failed:`, e instanceof Error ? e.message : e)
+    }
+  }
+
   if (opts.dryRun) {
     console.log(
       `[coverage] DRY RUN — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts, ` +
