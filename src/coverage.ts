@@ -19,6 +19,7 @@ import { google, type gmail_v1 } from "googleapis"
 import { config } from "./config.js"
 import { ensureGoogleAuthed } from "./google/oauth.js"
 import { setCheckStatus } from "./health.js"
+import { ensureLabel } from "./google/gmail.js"
 // Shared domain KNOWLEDGE (who our suppliers are) — not shared processing
 // logic; the sentinel's listing and coverage rules stay pipeline-independent.
 import { isLikelySupplier } from "./pipeline.js"
@@ -35,6 +36,18 @@ const OUR_SUBJECT = /^\[tarte inbox\]|^inbox digest |^(accepted|declined|tentati
 const UNANSWERED_ALERT_HOURS = 4 // the agent acts within minutes; hours = broken
 const STALE_DRAFT_HOURS = 48 // system did its part; humans haven't sent
 const MAX_LIST = 1000
+
+// The "Missed" folder (Chloe, 2026-07-20): a visible Gmail folder holding every
+// customer email our side has NOT actually sent a reply to yet — so the girls
+// can see at a glance what slipped through. Broad by design: a pending agent
+// draft still counts as "missed" because the customer has received nothing.
+// The thread drops out of the folder the moment our reply becomes the newest
+// message (we scan it again in place and strip the label). Separate from the
+// unread-nagging sweep, which Chloe kept limited to pending drafts.
+const MISSED_LABEL_NAME = "Tarte / Missed"
+// Short grace so we don't flag mail the agent is still mid-processing (it ticks
+// and drafts within minutes; the audit itself only runs hourly).
+const MISSED_FOLDER_MIN_HOURS = 1
 
 interface ThreadVerdict {
   id: string
@@ -71,6 +84,13 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
       .filter((l) => l.name && COVERED_LABEL_NAMES.includes(l.name))
       .map((l) => l.id!)
   )
+  // The "Missed" folder label. Resolve its id from the existing labels; only
+  // create it for real (a live run), so a dry run stays side-effect free.
+  let missedLabelId =
+    (labelRes.data.labels ?? []).find((l) => l.name === MISSED_LABEL_NAME)?.id ?? ""
+  if (!missedLabelId && !opts.dryRun) missedLabelId = await ensureLabel(MISSED_LABEL_NAME)
+  let missedAdded = 0
+  let missedCleared = 0
 
   // Own pagination, own query. Promotions are excluded to mirror what the
   // agent is responsible for; Gmail-misfiled customers are a separate problem.
@@ -106,14 +126,45 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
       const from = header(last, "From")
       const subject = header(last, "Subject") || "(no subject)"
       const fromUs = from.toLowerCase().includes(hello)
+      // "Noise" = senders that never need a reply from us (automated systems,
+      // suppliers, our own loopback mail, internal staff). Same filter the
+      // alert buckets below use.
+      const noise =
+        MACHINE_SENDER.test(from) ||
+        OUR_SUBJECT.test(subject) ||
+        isLikelySupplier(from) ||
+        /@tarte\.com\.au/i.test(from)
+      const ageHours = (Date.now() - Number(last.internalDate ?? 0)) / 3_600_000
+
+      // --- Missed folder reconciliation (runs for EVERY scanned thread) ---
+      // A thread is "missed" while a real customer is the newest message and
+      // enough grace has passed that the agent has had its chance. The instant
+      // our reply becomes newest (fromUs) it's no longer missed — we scan it in
+      // place here and strip the label. Broad by design: a pending draft still
+      // counts, because the customer has received nothing.
+      const missed = !fromUs && !noise && ageHours > MISSED_FOLDER_MIN_HOURS
+      const hasMissedLabel = msgs.some((m) => (m.labelIds ?? []).includes(missedLabelId))
+      if (!opts.dryRun) {
+        try {
+          if (missed && !hasMissedLabel) {
+            await g.users.threads.modify({ userId: "me", id, requestBody: { addLabelIds: [missedLabelId] } })
+            missedAdded++
+          } else if (!missed && hasMissedLabel) {
+            await g.users.threads.modify({ userId: "me", id, requestBody: { removeLabelIds: [missedLabelId] } })
+            missedCleared++
+          }
+        } catch (e) {
+          console.warn(`[coverage] missed-label reconcile failed for ${id}:`, e instanceof Error ? e.message : e)
+        }
+      } else if (missed !== hasMissedLabel) {
+        if (missed) missedAdded++
+        else missedCleared++
+      }
+
       if (fromUs) continue // we answered last — covered
-      if (MACHINE_SENDER.test(from) || OUR_SUBJECT.test(subject) || isLikelySupplier(from)) continue
-      // Internal staff mail (shawna@/chloe@/etc. writing to hello@) isn't a
-      // customer waiting on us.
-      if (/@tarte\.com\.au/i.test(from)) continue
+      if (noise) continue
       const hasDraft = msgs.some((m) => (m.labelIds ?? []).includes("DRAFT"))
       const flagged = msgs.some((m) => (m.labelIds ?? []).some((l) => coveredLabelIds.has(l)))
-      const ageHours = (Date.now() - Number(last.internalDate ?? 0)) / 3_600_000
       const v: ThreadVerdict = { id, from: from.slice(0, 60), subject: subject.slice(0, 70), ageHours: Math.round(ageHours) }
       if (!hasDraft && !flagged && ageHours > UNANSWERED_ALERT_HOURS) unanswered.push(v)
       else if (hasDraft && ageHours > STALE_DRAFT_HOURS) staleDrafts.push(v)
@@ -129,7 +180,10 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
       .join("; ") + (list.length > 10 ? ` (+${list.length - 10} more)` : "")
 
   if (opts.dryRun) {
-    console.log(`[coverage] DRY RUN — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts (watchdog not updated)`)
+    console.log(
+      `[coverage] DRY RUN — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts, ` +
+        `"${MISSED_LABEL_NAME}" would +${missedAdded}/-${missedCleared} (watchdog + labels not touched)`
+    )
     return { scanned, unanswered, staleDrafts }
   }
 
@@ -147,6 +201,8 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
       ? `${staleDrafts.length} draft(s) have sat unsent for ${STALE_DRAFT_HOURS}h+ while the customer waits: ${fmt(staleDrafts)}`
       : undefined
   )
+  if (missedAdded || missedCleared)
+    console.log(`[coverage] "${MISSED_LABEL_NAME}" folder: +${missedAdded} added, -${missedCleared} cleared`)
   console.log(
     `[coverage] scanned ${scanned}/${ids.length} threads — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts`
   )
