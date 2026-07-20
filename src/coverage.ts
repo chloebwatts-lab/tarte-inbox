@@ -26,7 +26,13 @@ import { isLikelySupplier } from "./pipeline.js"
 
 // Pipeline-independent noise filter: obvious machine senders never need a reply.
 const MACHINE_SENDER =
-  /no-?reply|donotreply|do-not-reply|mailer-daemon|postmaster|notification[s]?@|newsletter@|marketing@|alerts?@|receipts?@|billing@|invoice[s]?@squarespace|@docs\.google\.com/i
+  /no-?reply|donotreply|do-not-reply|mailer-daemon|postmaster|notification[s]?@|newsletter@|marketing@|alerts?@|receipts?@|billing@|invoice[s]?@squarespace|@docs\.google\.com|@post\.xero\.com/i
+// Job-board application relays (hiring platform "conversation-<name>-<id>@"
+// senders / "[Action required] New application" subjects). These have their own
+// forward-to-work@ queue flow — surfacing 60 of them in the Missed folder would
+// drown the real catches (2026-07-20 backfill: 60 of 87 were these).
+const JOB_RELAY_SENDER = /^[^<]*<?conversation-[^@]+@/i
+const JOB_RELAY_SUBJECT = /^\[action required\] new application/i
 // Staff-facing flag labels that mean "a human has been told".
 const COVERED_LABEL_NAMES = ["Tarte / Action needed", "Tarte / URGENT"]
 // Our own watchdog/digest mail loops back into hello@ — never "unanswered".
@@ -133,7 +139,9 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
         MACHINE_SENDER.test(from) ||
         OUR_SUBJECT.test(subject) ||
         isLikelySupplier(from) ||
-        /@tarte\.com\.au/i.test(from)
+        /@tarte\.com\.au/i.test(from) ||
+        JOB_RELAY_SENDER.test(from) ||
+        JOB_RELAY_SUBJECT.test(subject)
       const ageHours = (Date.now() - Number(last.internalDate ?? 0)) / 3_600_000
 
       // --- Missed folder reconciliation (runs for EVERY scanned thread) ---
