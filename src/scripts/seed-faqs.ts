@@ -157,13 +157,13 @@ const SEEDS: FaqSeed[] = [
       {
         question: "Set Brunch Package at Beach House restaurant?",
         answer:
-          "$40 per person. 6-16 pax, 2-hour sitting. Choice of main dish (avo toast, salmon bagel, eggs your way with a side), fresh juice, coffee or tea.",
+          "$44 per person. 6-16 pax, 8:00am-9:30am sitting. Choice of main dish (avo toast, twice salmon bagel, or eggs your way with a side), pastry of the day, barista coffee or tea, and shared jugs of fresh juice.",
       },
       {
         question:
-          "What does the $55 set restaurant brunch include?",
+          "What does the Set Lunch package include?",
         answer:
-          "$55 per person. Yoghurt pot, choice of main (avo toast / salmon bagel / eggs your way with a side), selection of pastries, fresh juice, coffee or tea. 6-16 pax, 2-hour sitting.",
+          "$65 per person. 6-16 pax, 2-hour sitting. Sourdough, burrata and seasonal salad shared to start, then choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries), tarte of the day to finish, and coffee or tea. Drinks otherwise on consumption.",
       },
       {
         question:
