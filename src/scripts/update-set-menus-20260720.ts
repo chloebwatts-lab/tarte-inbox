@@ -16,7 +16,7 @@ const CATEGORY = "bookings_dine_in"
 
 const BRUNCH_Q = "set brunch package at beach house restaurant?"
 const BRUNCH_A =
-  "$45 per person. 6-16 pax. Choice of main dish (avo toast, twice salmon bagel, or eggs your way with a side), choice of pastry, muffin top or cookie, barista coffee or tea, and shared jugs of fresh juice."
+  "$45 per person. 6-16 pax. Choice of main dish (avo toast, twice salmon bagel, or eggs your way with a side), house pastry, barista coffee or tea, and shared jugs of fresh juice."
 
 const OLD_LUNCH_Q = "what does the $55 set restaurant brunch include?"
 const LUNCH_Q = "What does the Set Lunch package include?"
