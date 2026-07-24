@@ -1,5 +1,5 @@
 import { anthropic, MODEL } from "./client.js"
-import type { Playbook } from "../db/queries.js"
+import { listActiveHouseNotes, type Playbook } from "../db/queries.js"
 import type { Category } from "./classifier.js"
 
 export interface DraftRequest {
@@ -111,6 +111,34 @@ function renderPlaybook(p: Playbook | null): string {
     .join("\n")
 }
 
+// Staff-written live guidance from the TK admin (inbox_house_notes). Layered
+// UNDER the hard rules: anything in SYSTEM_BASE / BUSINESS_FACTS wins on
+// conflict, and the code-level guards (sign-off, debot) run regardless.
+// Never sourced from customer email content — staff input only.
+function renderHouseNotes(notes: Array<{ body: string; author: string }>): string {
+  if (!notes.length) return ""
+  const lines = notes
+    .map((n) => `- ${n.body.slice(0, 500).replace(/\s+/g, " ").trim()} [${n.author}]`)
+    .join("\n")
+  return (
+    `\n--- house notes from Tarte staff (live guidance) ---\n` +
+    `Apply these when drafting. They may add facts, phrasing or tone preferences. ` +
+    `If a note conflicts with any rule above (the sign-off, no em-dashes/AI tells, ` +
+    `no comps or vouchers, crullers not churros, no dinner yet), the rule above wins.\n` +
+    lines
+  )
+}
+
+async function loadHouseNotesBlock(): Promise<string> {
+  try {
+    return renderHouseNotes(await listActiveHouseNotes())
+  } catch (e) {
+    // A notes hiccup must never block drafting.
+    console.error("[drafter] house notes unavailable:", e instanceof Error ? e.message : e)
+    return ""
+  }
+}
+
 function renderThread(
   history: DraftRequest["threadHistory"]
 ): string {
@@ -135,7 +163,7 @@ function todayLineBrisbane(): string {
 }
 
 export async function draft(req: DraftRequest): Promise<DraftResult> {
-  const system = SYSTEM_BASE + renderPlaybook(req.playbook)
+  const system = SYSTEM_BASE + (await loadHouseNotesBlock()) + renderPlaybook(req.playbook)
   const user =
     `Reply to the latest message in this thread.` +
     (req.customerName ? ` Customer first name: ${req.customerName}.` : "") +

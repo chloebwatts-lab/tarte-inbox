@@ -296,6 +296,38 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     // never fail the digest on a side-section
   }
 
+  // House notes visibility: any live-guidance note or suggestion added since
+  // the last digest is called out so changes to the agent's behaviour are
+  // never invisible to Chloe.
+  try {
+    const { houseNoteDigestStats } = await import("./db/queries.js")
+    const hn = await houseNoteDigestStats()
+    if (hn.recent.length || hn.openSuggestions) {
+      const lines: string[] = []
+      const newNotes = hn.recent.filter((n) => n.kind === "note")
+      const newSuggestions = hn.recent.filter((n) => n.kind === "suggestion")
+      if (newNotes.length) {
+        const authors = [...new Set(newNotes.map((n) => n.author))].join(", ")
+        lines.push(
+          `🗒️ ${newNotes.length} new house note(s) added by ${authors} — now live in the agent's drafting guidance:\n` +
+            newNotes.map((n) => `  • ${n.body.slice(0, 160)}`).join("\n")
+        )
+      }
+      if (newSuggestions.length) {
+        const authors = [...new Set(newSuggestions.map((n) => n.author))].join(", ")
+        lines.push(`💡 ${newSuggestions.length} new suggestion(s) from ${authors} parked for review.`)
+      }
+      if (hn.openSuggestions) {
+        lines.push(
+          `💡 ${hn.openSuggestions} suggestion(s) awaiting review at kitchen.tarte.com.au/inbox-playbooks (ask Claude to action them).`
+        )
+      }
+      sections.push(lines.join("\n"))
+    }
+  } catch (e) {
+    console.error("[digest] house notes section failed:", e instanceof Error ? e.message : e)
+  }
+
   const handledTotal = handled.rows.reduce((s, r) => s + r.n, 0)
   if (handledTotal) {
     const names: Record<string, string> = {

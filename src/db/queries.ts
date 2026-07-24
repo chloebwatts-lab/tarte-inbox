@@ -327,3 +327,46 @@ export async function finishRun(
     [id, stats.threads_seen, stats.threads_acted, stats.error ?? null]
   )
 }
+
+// --- House notes (staff-written live guidance + parked suggestions) ---
+
+export interface HouseNote {
+  id: number
+  kind: "note" | "suggestion"
+  body: string
+  author: string
+  created_at: Date
+}
+
+/** Active live-guidance notes, oldest first (chronological layering). The
+ * drafter injects these below its hard rules. Capped defensively — the UI
+ * enforces its own limits but the prompt must never grow unbounded. */
+export async function listActiveHouseNotes(limit = 40): Promise<HouseNote[]> {
+  const r = await db().query<HouseNote>(
+    `SELECT id, kind, body, author, created_at
+       FROM inbox_house_notes
+      WHERE active AND kind = 'note'
+      ORDER BY created_at ASC
+      LIMIT $1`,
+    [limit]
+  )
+  return r.rows
+}
+
+/** Digest visibility: notes/suggestions added in the last `hours`, plus how
+ * many suggestions are still parked (active) awaiting review. */
+export async function houseNoteDigestStats(hours = 26): Promise<{
+  recent: Array<{ kind: string; author: string; body: string }>
+  openSuggestions: number
+}> {
+  const recent = await db().query<{ kind: string; author: string; body: string }>(
+    `SELECT kind, author, body FROM inbox_house_notes
+      WHERE created_at > now() - ($1 || ' hours')::interval
+      ORDER BY created_at ASC`,
+    [hours]
+  )
+  const open = await db().query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM inbox_house_notes WHERE active AND kind = 'suggestion'`
+  )
+  return { recent: recent.rows, openSuggestions: Number(open.rows[0]?.n ?? 0) }
+}

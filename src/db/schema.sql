@@ -229,6 +229,28 @@ CREATE TABLE IF NOT EXISTS inbox_allergen_assessments (
   source            text NOT NULL DEFAULT 'llm'   -- 'llm' | 'human'
 );
 
+-- Staff "house notes" + suggestions, written from the TK /inbox-playbooks
+-- admin (Caddy basic-auth gated). kind='note' rows are LIVE drafter guidance:
+-- injected into the drafting prompt on the next tick, layered UNDER the
+-- hard-coded rules (sign-off, no AI tells, no comps, etc) which always win.
+-- kind='suggestion' rows are parked for human/Claude review and never reach
+-- the model. Rows are soft-deleted (active=false) so there's always a trail
+-- of who added and removed what. NEVER populate this table from customer
+-- email content — staff input only (it feeds the system prompt).
+CREATE TABLE IF NOT EXISTS inbox_house_notes (
+  id             bigserial PRIMARY KEY,
+  kind           text NOT NULL DEFAULT 'note' CHECK (kind IN ('note', 'suggestion')),
+  body           text NOT NULL CHECK (char_length(body) BETWEEN 3 AND 1000),
+  author         text NOT NULL,            -- typed name, e.g. "Georgia"
+  auth_user      text,                     -- basic-auth account that saved it
+  active         boolean NOT NULL DEFAULT true,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  deactivated_at timestamptz,
+  deactivated_by text
+);
+CREATE INDEX IF NOT EXISTS inbox_house_notes_active_idx
+  ON inbox_house_notes(kind, created_at) WHERE active;
+
 -- Audit log of every run.
 CREATE TABLE IF NOT EXISTS inbox_runs (
   id                bigserial PRIMARY KEY,
