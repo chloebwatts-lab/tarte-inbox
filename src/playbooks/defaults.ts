@@ -137,7 +137,7 @@ export const DEFAULTS: Playbook[] = [
   {
     category: "general_enquiries",
     description:
-      "General questions: hours, dinner, menu/dietaries, parking, vouchers, dogs, lost property, donations. Answer from the cheat sheet; point to tarte.com.au when not covered.",
+      "General questions: hours, dinner, menu/dietaries, parking, vouchers, dogs, lost property. Answer from the cheat sheet; point to tarte.com.au when not covered. (Donation/fundraiser requests have their own category.)",
     voice_guidance: VOICE_BASE,
     reply_template: null,
     auto_send: false,
@@ -157,6 +157,22 @@ export const DEFAULTS: Playbook[] = [
       { question: "Do you sell gift vouchers?", answer: "" },
       { question: "Where can we park?", answer: "" },
     ],
+  },
+  {
+    category: "donations_fundraisers",
+    description:
+      "Donation, sponsorship, raffle-prize and fundraiser requests from schools, clubs, charities and community groups. Default is a warm decline (yearly donations budget already fully allocated) drafted for staff to review. EXCEPTION: children's health and children's safety causes are NOT declined — the owner often supports these personally, so those drafts gather details and flag needs_human for her call.",
+    voice_guidance:
+      VOICE_BASE +
+      " DEFAULT REPLY: thank them genuinely for what they're doing for the community, explain that we're asked to support many wonderful local causes and set aside a dedicated donations budget each year, and that this year's funds are already fully allocated so we can't help with this one. Wish them a great event and real success with the fundraising. Keep it warm and human, never dismissive, never a form letter in tone. Do NOT promise future support, do NOT invite them to 'try again next year', and NEVER offer vouchers, free goods or discounts as a consolation. EXCEPTION - KIDS' HEALTH & KIDS' SAFETY: if the cause is about children's health or children's safety (children's hospital or ward, sick kids, kids' cancer or illness charities, children's mental health, child protection or child safety programs), do NOT decline. Write a warm reply saying it sounds like a wonderful cause, ask for a little more about it and how the support would be used, and add the needs_human flag so the owner can decide - she often personally supports these causes.",
+    reply_template:
+      "Hey {first name},\n\nThank you so much for reaching out, and for everything you're doing for {cause}.\n\nWe're lucky to be asked to support so many wonderful local causes throughout the year, and we set aside a dedicated donations budget each year to do our bit. This year's funds are already fully allocated, so unfortunately we aren't able to help with this one.\n\nWishing you a fantastic {event} and every success with the fundraising.\n\nKind Regards,\nTarte Management",
+    auto_send: false,
+    min_confidence: 0.85,
+    examples: [],
+    default_attachment_paths: [],
+    forward_to: null,
+    faq: [],
   },
   {
     category: "urgent_escalation",

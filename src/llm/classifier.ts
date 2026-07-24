@@ -10,6 +10,7 @@ export const CATEGORIES = [
   "bookings_existing",
   "orders_bespoke",
   "general_enquiries",
+  "donations_fundraisers",
   "job_applications",
   "marketing_cold_outreach",
   "accounts_invoices",
@@ -30,6 +31,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   bookings_existing: "Bookings / Existing",
   orders_bespoke: "Orders / Cakes & Catering",
   general_enquiries: "General enquiries",
+  donations_fundraisers: "Donations / Fundraisers",
   job_applications: "Job applications",
   marketing_cold_outreach: "Marketing / Cold outreach",
   accounts_invoices: "Accounts / Invoices",
@@ -56,7 +58,9 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
   orders_bespoke:
     "A cake, pastry, or catering ORDER (custom cakes, birthday cakes, celebration cakes, bulk pastry orders, takeaway catering) — not a venue booking.",
   general_enquiries:
-    "General questions: opening hours, dinner service, dietary/gluten-free/vegan options on the menu, parking, gift vouchers, dogs, where to find us, lost property, donation/sponsorship requests, general 'do you do X?' questions.",
+    "General questions: opening hours, dinner service, dietary/gluten-free/vegan options on the menu, parking, gift vouchers, dogs, where to find us, lost property, general 'do you do X?' questions.",
+  donations_fundraisers:
+    "A donation, sponsorship, raffle prize, gift-voucher or fundraiser request from a school, sports club, charity or community group (school fundraisers, charity raffles, sponsorship asks). NOT a commercial sales pitch.",
   job_applications: "A CV / job application / casual work enquiry.",
   marketing_cold_outreach:
     "Unsolicited sales pitch, agency outreach, SEO/marketing pitch, cold B2B offer.",
@@ -95,6 +99,7 @@ Rules:
 - Illness after dining, food safety, injury, allergy incident, legal/media threat → urgent_escalation, even at low confidence. This OVERRIDES the low-confidence rule below.
 - Review notification emails from Google / Tripadvisor / Yelp / etc → reviews.
 - Pitch / agency / SEO / cold offer → marketing_cold_outreach. Be liberal here; default these to low-priority.
+- Donation / sponsorship / raffle-prize / fundraiser requests from schools, clubs, charities or community groups → donations_fundraisers (NOT marketing_cold_outreach, NOT general_enquiries — a genuine community ask always gets a reply).
 - A thread that has clearly concluded (bare thanks, no question, nothing owed) → no_action. But if WE owe the customer anything — a promised follow-up, an unanswered question anywhere in the thread, a "we'll get back to you" — it is NOT concluded: use needs_human.
 - When in doubt, prefer needs_human over a wrong confident answer.
 - Confidence under 0.6 → also coerce category to needs_human (EXCEPT urgent_escalation, which sticks).`
