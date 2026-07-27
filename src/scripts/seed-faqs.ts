@@ -163,7 +163,7 @@ const SEEDS: FaqSeed[] = [
         question:
           "What does the Set Lunch package include?",
         answer:
-          "$65 per person. 12+ guests, main restaurant. Crispy chilli burrata and hot honey sourdough shared to start, then choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries) served with seasonal green salad, housemade pastry to finish, and coffee or tea. Drinks otherwise on consumption.",
+          "$65 per person. 12+ guests, main restaurant. Crispy chilli burrata, hot honey sourdough and seasonal green salad shared to start, then choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries), housemade pastry to finish, and coffee or tea. Drinks otherwise on consumption.",
       },
       {
         question:

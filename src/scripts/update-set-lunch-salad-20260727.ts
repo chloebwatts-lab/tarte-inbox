@@ -1,6 +1,7 @@
-// One-off: bring the LIVE bookings_dine_in Set Lunch FAQ in line with the
-// updated pack page 12 (Chloe, 2026-07-27): seasonal green salad now
-// accompanies the choice of main instead of being shared to start.
+// One-off: v2 REVERT (Chloe, 2026-07-27 "dont like what you have done"):
+// restore the original Set Lunch FAQ wording — seasonal green salad is
+// shared to start, exactly as before today's experiment. v1 of this script
+// had moved it to accompany the mains; the pack page was reverted too.
 // seed-faqs.ts never overwrites a non-empty live answer, so this targeted
 // update is needed (same pattern as update-set-menus-20260720.ts).
 //
@@ -16,7 +17,7 @@ const CATEGORY = "bookings_dine_in"
 
 const LUNCH_Q = "what does the set lunch package include?"
 const LUNCH_A =
-  "$65 per person. 12+ guests, main restaurant. Crispy chilli burrata and hot honey sourdough shared to start, then choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries) served with seasonal green salad, housemade pastry to finish, and coffee or tea. Drinks otherwise on consumption."
+  "$65 per person. 12+ guests, main restaurant. Crispy chilli burrata, hot honey sourdough and seasonal green salad shared to start, then choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries), housemade pastry to finish, and coffee or tea. Drinks otherwise on consumption."
 
 async function main(): Promise<void> {
   await migrate()
