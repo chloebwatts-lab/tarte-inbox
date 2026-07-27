@@ -101,7 +101,7 @@ const SEEDS: FaqSeed[] = [
       {
         question: "What is The Hideout?",
         answer:
-          "The Hideout is our private function space at Beach House. Relaxed Parisian-Hamptons styling, sweeping views of Currumbin Creek and a 100-year-old fig tree. Intimate gatherings of 12-30 guests. Private balcony, air-conditioned, dedicated staff.",
+          "The Hideout is our private function space upstairs at Beach House. Relaxed Parisian-Hamptons styling, sweeping views of Currumbin Creek and a 100-year-old fig tree. Intimate gatherings of 12-30 guests. Private balcony, air-conditioned, dedicated staff.",
       },
       {
         question: "Hideout High Tea package price and inclusions?",

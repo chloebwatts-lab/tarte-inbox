@@ -1,10 +1,14 @@
 // One-off: bring the LIVE events_beach_house_functions FAQ in line with the
 // current Hideout Family Style Lunch menu (Chloe, 2026-07-27): crispy chilli &
 // burrata / seasonal salad / spanner crab linguine / sauteed greens replace the
-// old cured salmon / asian herb salad / chilli crab menu. Also drops the
-// "upstairs" wording from the Hideout description (no upstairs/downstairs at
-// Beach House). seed-faqs.ts never overwrites a non-empty live answer, so this
-// targeted update is needed (same pattern as update-set-menus-20260720.ts).
+// old cured salmon / asian herb salad / chilli crab menu. seed-faqs.ts never
+// overwrites a non-empty live answer, so this targeted update is needed (same
+// pattern as update-set-menus-20260720.ts).
+//
+// v2 (same day): RESTORES the "upstairs" wording the first run removed from
+// the Hideout description — Chloe confirmed The Hideout IS upstairs (a
+// function room attached to the restaurant); the no-upstairs rule is about
+// the dining spaces, not the Hideout.
 //
 // Idempotent — safe to run repeatedly.
 //
@@ -43,14 +47,22 @@ async function main(): Promise<void> {
     changed++
   }
 
-  // 2. Hideout description: drop "upstairs" (no upstairs/downstairs exists).
+  // 2. Hideout description: restore "upstairs" (removed in error by v1 —
+  // The Hideout is the upstairs function room attached to the restaurant).
   const hIdx = faq.findIndex((e) => norm(e.question) === HIDEOUT_Q)
-  if (hIdx !== -1 && /\bupstairs\b/i.test(faq[hIdx]!.answer)) {
-    faq[hIdx] = {
-      ...faq[hIdx]!,
-      answer: faq[hIdx]!.answer.replace(/ upstairs\b/gi, ""),
+  if (hIdx !== -1 && !/\bupstairs\b/i.test(faq[hIdx]!.answer)) {
+    const restored = faq[hIdx]!.answer.replace(
+      /private function space at Beach House/i,
+      "private function space upstairs at Beach House"
+    )
+    if (restored === faq[hIdx]!.answer) {
+      console.warn(
+        `[update-family-lunch] could not restore "upstairs" automatically; answer is: ${faq[hIdx]!.answer}`
+      )
+    } else {
+      faq[hIdx] = { ...faq[hIdx]!, answer: restored }
+      changed++
     }
-    changed++
   }
 
   if (!changed) {
