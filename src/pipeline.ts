@@ -2334,9 +2334,14 @@ export async function runInvoiceRequests(): Promise<{ processed: number }> {
         processed++
         continue
       }
-      const x = await extractInvoiceDetails(thread, today, weekday)
+      // Staff explicitly asked for an invoice — give the extractor the
+      // customer's OTHER threads too, since agreed prices/deposits often
+      // live in an earlier chain (the Bianca Zorn failure, 2026-07-24).
+      const customerAddr = extractEmail(customerMsg.from) || ""
+      const history = customerAddr ? await fetchCustomerHistory(customerAddr, id).catch(() => []) : []
+      const x = await extractInvoiceDetails(thread, today, weekday, renderCustomerHistory(history))
       // From-header fallback — the address is often only in the headers.
-      if (!x.customer_email) x.customer_email = extractEmail(customerMsg.from) || null
+      if (!x.customer_email) x.customer_email = customerAddr || null
       if (manuallyInvoiceable(x)) {
         await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
       } else {
@@ -2408,10 +2413,14 @@ export async function processInvoiceRebuild(
   )
   const kinds = kindsRes.rows.map((r) => r.kind)
 
-  const x = await extractInvoiceDetails(thread, today, weekday)
+  // Same cross-thread context as the Make-Invoice path — rebuilds must see
+  // details agreed in the customer's other chains too.
+  const rbAddr = extractEmail(customerMsg.from) || ""
+  const rbHistory = rbAddr ? await fetchCustomerHistory(rbAddr, id).catch(() => []) : []
+  const x = await extractInvoiceDetails(thread, today, weekday, renderCustomerHistory(rbHistory))
   // The customer's address lives in the From header, not always in the body
   // text the extractor reads — don't let a missing body email block invoicing.
-  if (!x.customer_email) x.customer_email = extractEmail(customerMsg.from) || null
+  if (!x.customer_email) x.customer_email = rbAddr || null
   // Payments aren't part of the thread extraction — carry forward what staff
   // or the bank match already recorded so a rebuild never "unpays" an invoice.
   const prior = await db().query<{ editable: InvoiceExtraction | null }>(

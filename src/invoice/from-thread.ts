@@ -74,7 +74,12 @@ CRITICAL rules:
 export async function extractInvoiceDetails(
   thread: ParsedThread,
   todayBrisbane: string,
-  todayWeekday: string
+  todayWeekday: string,
+  // The customer's OTHER threads with us, pre-rendered. Bookings often span
+  // several chains (Bianca Zorn: price + deposit lived in older threads while
+  // Make-Invoice was applied to a fresh two-message one) — without this the
+  // extractor is blind to details the customer already agreed elsewhere.
+  extraContext?: string
 ): Promise<InvoiceExtraction> {
   // Read the ENTIRE thread — final agreed numbers/dates often sit deep in a
   // long chain (Chris's rule).
@@ -86,7 +91,11 @@ export async function extractInvoiceDetails(
     messages: [
       {
         role: "user",
-        content: `TODAY is ${todayWeekday} ${todayBrisbane} (Australia/Brisbane).\n\nThread:\n\n${body}`,
+        content:
+          `TODAY is ${todayWeekday} ${todayBrisbane} (Australia/Brisbane).\n\nThread:\n\n${body}` +
+          (extraContext
+            ? `\n\nThe SAME customer also has these other email threads with us — agreed prices, dates, numbers and deposits may live here:\n${extraContext}`
+            : ""),
       },
     ],
   })
