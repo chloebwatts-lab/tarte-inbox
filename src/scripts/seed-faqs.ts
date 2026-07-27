@@ -101,7 +101,7 @@ const SEEDS: FaqSeed[] = [
       {
         question: "What is The Hideout?",
         answer:
-          "The Hideout is our private function space upstairs at Beach House. Relaxed Parisian-Hamptons styling, sweeping views of Currumbin Creek and a 100-year-old fig tree. Intimate gatherings of 12-30 guests. Private balcony, air-conditioned, dedicated staff.",
+          "The Hideout is our private function space at Beach House. Relaxed Parisian-Hamptons styling, sweeping views of Currumbin Creek and a 100-year-old fig tree. Intimate gatherings of 12-30 guests. Private balcony, air-conditioned, dedicated staff.",
       },
       {
         question: "Hideout High Tea package price and inclusions?",
@@ -111,7 +111,7 @@ const SEEDS: FaqSeed[] = [
       {
         question: "Hideout Family Style Lunch package?",
         answer:
-          "$89 per person. 3 hours including setup. Start time 11am-2pm. Min 12, max 32 seated. Includes cured salmon, fresh sourdough with olive oil, asian herb micro green salad, chilli crab linguine, greens, and seasonal berry tarte for dessert. Beer, wine or cocktail each.",
+          "$89 per person. 3 hours including setup. Start time 11am-2pm. Min 12, max 32 seated. Includes crispy chilli and burrata, fresh sourdough with olive oil, seasonal salad, spanner crab linguine, sauteed greens, and seasonal berry tarte for dessert. Beer, wine or cocktail each.",
       },
       {
         question: "Minimum party size for a Hideout function?",
