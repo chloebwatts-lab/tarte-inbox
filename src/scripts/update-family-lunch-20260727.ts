@@ -52,8 +52,8 @@ async function main(): Promise<void> {
   const hIdx = faq.findIndex((e) => norm(e.question) === HIDEOUT_Q)
   if (hIdx !== -1 && !/\bupstairs\b/i.test(faq[hIdx]!.answer)) {
     const restored = faq[hIdx]!.answer.replace(
-      /private function space at Beach House/i,
-      "private function space upstairs at Beach House"
+      /private function space at ((?:Tarte )?Beach House)/i,
+      "private function space upstairs at $1"
     )
     if (restored === faq[hIdx]!.answer) {
       console.warn(
