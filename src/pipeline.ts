@@ -99,7 +99,30 @@ const SLOT_DURATION_DEFAULT_HOURS = 3
 const FUNCTION_DEPOSIT_AUD = 500
 // Deposit invoices BCC accounts + Shawna when sent (Shawna 2026-06-15;
 // accounts@tarte.com.au confirmed by Chris 2026-06-15).
-const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au"]
+// Louise (bookkeeper, kilgour1@hotmail.com) is BCC'd on every event invoice
+// so she can apply it in Xero against the EVENT date (Chloe 2026-07-28).
+const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au", "kilgour1@hotmail.com"]
+
+/** Subject tag for invoice emails: the EVENT date (what Louise books the
+ * revenue against) + the invoice number, e.g. " | EVENT Fri 31 Jul 2026 |
+ * TARTE-2026-00016". Kept short and greppable. */
+export function invoiceSubjectSuffix(eventDate: string | null | undefined, invoiceNumber: string): string {
+  if (!eventDate) return ` | ${invoiceNumber}`
+  const label = new Date(`${eventDate}T00:00:00+10:00`).toLocaleDateString("en-AU", {
+    timeZone: "Australia/Brisbane",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  })
+  return ` | EVENT ${label} | ${invoiceNumber}`
+}
+
+/** Strip any earlier " | EVENT ... | TARTE-..." tag so repeated invoice
+ * emails on one thread don't stack suffixes. */
+export function stripInvoiceSubjectSuffix(subject: string): string {
+  return subject.replace(/ \| (EVENT [^|]+ \| )?TARTE-\d{4}-\d+\s*$/, "")
+}
 const BALANCE_DAYS_BEFORE_EVENT = 14
 
 // Triage labels — the staff work surface. The deal: anything needing a human
@@ -1509,7 +1532,14 @@ async function deliver(
   d: DraftResult,
   category: Category,
   playbook: Awaited<ReturnType<typeof getPlaybook>>,
-  opts: { extraAttachments?: Attachment[]; bcc?: string[]; invoiceCreated?: boolean } = {}
+  opts: {
+    extraAttachments?: Attachment[]
+    bcc?: string[]
+    invoiceCreated?: boolean
+    // Appended to the reply subject (e.g. the EVENT-date tag on invoice
+    // emails). Any earlier tag is stripped first so they never stack.
+    subjectSuffix?: string
+  } = {}
 ): Promise<boolean> {
   const helloMail = config().HELLO_MAILBOX
   // Last-line guard: never address a reply to a no-reply / relay sender that
@@ -1548,7 +1578,9 @@ async function deliver(
     threadId: thread.threadId,
     to: latest.from,
     bcc: opts.bcc,
-    subject: latest.subject,
+    subject: opts.subjectSuffix
+      ? stripInvoiceSubjectSuffix(latest.subject) + opts.subjectSuffix
+      : latest.subject,
     inReplyTo: tail.messageIdHeader ?? latest.messageIdHeader ?? "",
     references:
       tail.references ?? tail.messageIdHeader ?? latest.references ?? latest.messageIdHeader ?? "",
@@ -2005,7 +2037,7 @@ export async function createManualInvoice(fields: {
   const safeName = fields.customer_name.replace(/[^A-Za-z0-9 ]/g, "").trim()
   const { threadId } = await createStandaloneDraftWithThread(
     fields.customer_email,
-    `Your booking with Tarte${fields.event_date ? ` — ${fields.event_date}` : ""}`,
+    `Your booking with Tarte${invoiceSubjectSuffix(fields.event_date, built.invoiceNumber)}`,
     body,
     config().HELLO_MAILBOX,
     "Tarte Team",
@@ -2139,6 +2171,7 @@ export async function regenerateInvoiceFromEdits(
   const suffix = rec.kind === "balance" ? " (Balance)" : ""
   await deliver(thread, latest, d, category, playbook, {
     bcc: INVOICE_BCC, invoiceCreated: true,
+    subjectSuffix: invoiceSubjectSuffix(x.event_date, built.invoiceNumber),
     extraAttachments: [
       {
         filename: `${built.invoiceNumber} - ${safeName}${suffix}.pdf`,
@@ -2279,8 +2312,9 @@ async function composeAndDeliverInvoice(
   if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   await deliver(thread, latest, d, category, playbook, {
-    // BCC accounts + Shawna so the sent invoice copies them in (Chris/Shawna).
+    // BCC accounts + Shawna + Louise so the sent invoice copies them in.
     bcc: INVOICE_BCC, invoiceCreated: true,
+    subjectSuffix: invoiceSubjectSuffix(x.event_date, built.invoiceNumber),
     extraAttachments: [
       {
         filename: `${built.invoiceNumber} - ${safeName}.pdf`,

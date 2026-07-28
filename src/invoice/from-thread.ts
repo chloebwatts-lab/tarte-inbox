@@ -311,5 +311,48 @@ export async function buildInvoiceFromExtraction(
       gen.invoiceNumber,
     ])
     .catch((e) => console.error("[invoice] failed to persist editable detail:", e instanceof Error ? e.message : e))
+  // Mirror into Xero as a DRAFT dated the EVENT date so Louise can approve
+  // and apply payments to the right period. Best-effort — a Xero hiccup must
+  // never block the customer invoice.
+  await syncXeroEventDraft(gen.invoiceNumber, opts.threadId, x, lineItems).catch((e) =>
+    console.error("[invoice] xero event-draft sync failed:", e instanceof Error ? e.message : e)
+  )
   return { ...gen, extraction: x }
+}
+
+/** One DRAFT Xero invoice per event thread, dated the event date, upserted on
+ * every rebuild. Skipped when the event date or customer email is unknown. */
+async function syncXeroEventDraft(
+  invoiceNumber: string,
+  threadId: string,
+  x: InvoiceExtraction,
+  lineItems: LineItem[]
+): Promise<void> {
+  if (!x.event_date || !x.customer_email) return
+  const gross = lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
+  if (gross <= 0) return
+  const { findOrCreateContact, upsertEventDraftInvoice } = await import("../xero/client.js")
+  const existing = await db().query<{ xero_invoice_id: string }>(
+    `SELECT xero_invoice_id FROM inbox_invoices
+      WHERE thread_id = $1 AND thread_id <> '' AND xero_invoice_id IS NOT NULL
+      ORDER BY id LIMIT 1`,
+    [threadId]
+  )
+  const contactId = await findOrCreateContact(x.customer_email, x.customer_name ?? x.customer_email)
+  const xeroId = await upsertEventDraftInvoice({
+    existingInvoiceId: existing.rows[0]?.xero_invoice_id ?? null,
+    contactId,
+    reference: `${invoiceNumber} | EVENT ${x.event_date}`,
+    eventDate: x.event_date,
+    lines: lineItems.map((li) => ({
+      description: li.description,
+      quantity: li.qty,
+      unitAmount: li.unitPrice,
+    })),
+  })
+  await db().query(`UPDATE inbox_invoices SET xero_invoice_id = $1 WHERE invoice_number = $2`, [
+    xeroId,
+    invoiceNumber,
+  ])
+  console.log(`[invoice] xero DRAFT ${xeroId} synced for ${invoiceNumber} (event ${x.event_date})`)
 }

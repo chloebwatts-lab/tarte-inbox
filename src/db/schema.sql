@@ -158,6 +158,11 @@ ALTER TABLE inbox_invoices
   ADD COLUMN IF NOT EXISTS drive_file_id     text,
   ADD COLUMN IF NOT EXISTS drive_uploaded_at timestamptz;
 
+-- The DRAFT Xero invoice mirroring this event invoice (dated the EVENT date
+-- per Matt's rule, Louise approves + applies payments). Shared per thread.
+ALTER TABLE inbox_invoices
+  ADD COLUMN IF NOT EXISTS xero_invoice_id text;
+
 -- kind distinguishes the deposit/standard invoice from a later balance invoice
 -- (remaining 50% once the deposit is paid) so the two get separate numbers and
 -- are idempotent independently. editable stores the extracted booking details

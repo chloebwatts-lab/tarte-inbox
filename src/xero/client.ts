@@ -190,6 +190,50 @@ export async function createAuthorisedInvoice(opts: {
 
 /** Whether the stored Xero token can read bank transactions yet. False until
  * Chris re-authorises after the accounting.transactions.read scope was added. */
+/**
+ * DRAFT Xero invoice dated the EVENT DATE — Matt's rule via Chloe
+ * (2026-07-28): event revenue must land against the event date, not the
+ * invoice date or the day the deposit arrives. Kept as DRAFT so Louise
+ * reviews, recodes if needed, approves, and applies the deposit + balance
+ * bank payments against it. One Xero invoice per event (the deposit and
+ * balance PDFs share it), upserted on every rebuild so guest-count changes
+ * flow through. Amounts are GST-INCLUSIVE (matches the PDF pricing).
+ */
+export async function upsertEventDraftInvoice(opts: {
+  existingInvoiceId?: string | null
+  contactId: string
+  reference: string
+  eventDate: string // YYYY-MM-DD — becomes the invoice date AND due date
+  lines: InvoiceLine[]
+}): Promise<string> {
+  const { tenantId } = await ensureXeroAuthed()
+  const inv: Invoice = {
+    type: Invoice.TypeEnum.ACCREC,
+    contact: { contactID: opts.contactId },
+    reference: opts.reference,
+    date: opts.eventDate,
+    dueDate: opts.eventDate,
+    lineItems: opts.lines.map((l) => ({
+      description: l.description,
+      quantity: l.quantity,
+      unitAmount: l.unitAmount,
+      accountCode: l.accountCode ?? "200",
+    })),
+    status: Invoice.StatusEnum.DRAFT,
+    lineAmountTypes: LineAmountTypes.Inclusive,
+  }
+  if (opts.existingInvoiceId) {
+    const r = await xero().accountingApi.updateInvoice(tenantId, opts.existingInvoiceId, {
+      invoices: [inv],
+    })
+    return r.body.invoices?.[0]?.invoiceID ?? opts.existingInvoiceId
+  }
+  const r = await xero().accountingApi.createInvoices(tenantId, { invoices: [inv] })
+  const id = r.body.invoices?.[0]?.invoiceID
+  if (!id) throw new Error("xero createInvoices returned no id")
+  return id
+}
+
 export async function xeroBankMatchReady(): Promise<boolean> {
   const stored = await getTokens("xero")
   return Boolean(

@@ -190,9 +190,18 @@ export async function generateInvoice(input: InvoiceInput): Promise<GeneratedInv
   const thankyou = await loadImage(undefined, "tarte-thankyou.png")
   const issueDate = new Date(`${input.todayBrisbane}T00:00:00+10:00`)
   const pdf = await renderInvoicePdf({ cfg, input, invoiceNumber, gross, issueDate, logo, thankyou })
-  // Keep the bytes so we can archive a copy to Drive once the draft is sent.
+  // Keep the bytes so we can archive a copy to Drive once the draft is sent —
+  // and keep the stored amount in step with the regenerated total. The amount
+  // was previously only written at number-reservation time, so every rebuild
+  // (guest count change, added cake, staff edit) left the row showing the
+  // ORIGINAL total while the PDF said something else (Isabella Stenta:
+  // row $110 vs PDF $265, 2026-07-28 sweep).
   await db()
-    .query(`UPDATE inbox_invoices SET pdf_bytes = $1 WHERE invoice_number = $2`, [pdf, invoiceNumber])
+    .query(`UPDATE inbox_invoices SET pdf_bytes = $1, amount = $3 WHERE invoice_number = $2`, [
+      pdf,
+      invoiceNumber,
+      gross,
+    ])
     .catch((e) => console.error("[invoice] failed to persist pdf bytes:", e instanceof Error ? e.message : e))
   return { pdf, invoiceNumber }
 }
