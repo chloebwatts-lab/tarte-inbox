@@ -51,8 +51,16 @@ async function main(): Promise<void> {
           `${before} -> ${after.rows[0]?.xero_invoice_id ?? "(none)"}`
       )
     } catch (e) {
-      console.error(`[backfill] ${r.invoice_number} FAILED:`, e instanceof Error ? e.message : e)
+      // xero-node throws rich non-Error objects that include the raw auth
+      // header — never print those wholesale.
+      const status = (e as { response?: { statusCode?: number } })?.response?.statusCode
+      console.error(
+        `[backfill] ${r.invoice_number} FAILED:`,
+        e instanceof Error ? e.message : status ? `HTTP ${status}` : "unknown error"
+      )
     }
+    // Two Xero calls per row against a 60/min limit — pace the burst.
+    await new Promise((res) => setTimeout(res, 2500))
   }
   process.exit(0)
 }
