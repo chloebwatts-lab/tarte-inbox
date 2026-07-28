@@ -199,14 +199,59 @@ export async function createAuthorisedInvoice(opts: {
  * balance PDFs share it), upserted on every rebuild so guest-count changes
  * flow through. Amounts are GST-INCLUSIVE (matches the PDF pricing).
  */
+export interface EventDraftResult {
+  invoiceId: string
+  /** false when the Xero invoice is past DRAFT (approved/paid) and was left
+   * untouched — the caller must tell Louise to adjust it by hand. */
+  updated: boolean
+  skippedReason?: string
+}
+
+/** Revenue account for event lines. The Currumbin chart is custom, so "200"
+ * (Xero's stock Sales code) may not exist — resolve the real "Event Sales"
+ * account once and cache it for the process lifetime. */
+let eventSalesCode: string | null = null
+export async function resolveEventSalesAccountCode(): Promise<string> {
+  if (eventSalesCode) return eventSalesCode
+  const { tenantId } = await ensureXeroAuthed()
+  // Class covers SALES + REVENUE + OTHERINCOME typed accounts — the Currumbin
+  // chart's income accounts are custom, so don't gamble on the narrower Type.
+  const r = await xero().accountingApi.getAccounts(tenantId, undefined, 'Class=="REVENUE"')
+  const accounts = (r.body.accounts ?? []).filter((a) => a.code)
+  const byName = (re: RegExp) => accounts.find((a) => re.test(a.name ?? ""))
+  const pick =
+    byName(/^event sales$/i) ??
+    byName(/event/i) ??
+    accounts.find((a) => a.code === "200") ??
+    accounts[0]
+  if (!pick?.code) throw new Error("xero: no revenue account found for event invoices")
+  eventSalesCode = pick.code
+  console.log(`[xero] event lines will use revenue account ${pick.code} (${pick.name})`)
+  return eventSalesCode
+}
+
+async function getInvoiceSnapshot(
+  tenantId: string,
+  invoiceId: string
+): Promise<{ status: string; amountPaid: number; amountCredited: number }> {
+  const r = await xero().accountingApi.getInvoice(tenantId, invoiceId)
+  const inv = r.body.invoices?.[0]
+  return {
+    status: String(inv?.status ?? "UNKNOWN"),
+    amountPaid: inv?.amountPaid ?? 0,
+    amountCredited: inv?.amountCredited ?? 0,
+  }
+}
+
 export async function upsertEventDraftInvoice(opts: {
   existingInvoiceId?: string | null
   contactId: string
   reference: string
   eventDate: string // YYYY-MM-DD — becomes the invoice date AND due date
   lines: InvoiceLine[]
-}): Promise<string> {
+}): Promise<EventDraftResult> {
   const { tenantId } = await ensureXeroAuthed()
+  const accountCode = await resolveEventSalesAccountCode()
   const inv: Invoice = {
     type: Invoice.TypeEnum.ACCREC,
     contact: { contactID: opts.contactId },
@@ -217,21 +262,62 @@ export async function upsertEventDraftInvoice(opts: {
       description: l.description,
       quantity: l.quantity,
       unitAmount: l.unitAmount,
-      accountCode: l.accountCode ?? "200",
+      accountCode: l.accountCode ?? accountCode,
     })),
     status: Invoice.StatusEnum.DRAFT,
     lineAmountTypes: LineAmountTypes.Inclusive,
   }
   if (opts.existingInvoiceId) {
+    // Never rewrite an invoice Louise has already approved or applied money
+    // to — updating those (or demoting them to DRAFT) either errors or
+    // silently changes reviewed books. Skip and let the caller notify.
+    const snap = await getInvoiceSnapshot(tenantId, opts.existingInvoiceId)
+    if (snap.status !== "DRAFT") {
+      return {
+        invoiceId: opts.existingInvoiceId,
+        updated: false,
+        skippedReason: `Xero invoice is ${snap.status}${
+          snap.amountPaid ? ` with $${snap.amountPaid.toFixed(2)} applied` : ""
+        } — update it manually`,
+      }
+    }
     const r = await xero().accountingApi.updateInvoice(tenantId, opts.existingInvoiceId, {
       invoices: [inv],
     })
-    return r.body.invoices?.[0]?.invoiceID ?? opts.existingInvoiceId
+    return { invoiceId: r.body.invoices?.[0]?.invoiceID ?? opts.existingInvoiceId, updated: true }
   }
   const r = await xero().accountingApi.createInvoices(tenantId, { invoices: [inv] })
   const id = r.body.invoices?.[0]?.invoiceID
   if (!id) throw new Error("xero createInvoices returned no id")
-  return id
+  return { invoiceId: id, updated: true }
+}
+
+export interface CancelInvoiceResult {
+  action: "deleted" | "voided" | "manual"
+  status: string
+  amountPaid: number
+}
+
+/** Cancel the Xero side of a cancelled event. DRAFT → DELETED, approved but
+ * unpaid → VOIDED, anything with money applied is left alone (action:
+ * "manual") so Louise decides refund vs forfeit with the prepayment. */
+export async function cancelEventInvoice(invoiceId: string): Promise<CancelInvoiceResult> {
+  const { tenantId } = await ensureXeroAuthed()
+  const snap = await getInvoiceSnapshot(tenantId, invoiceId)
+  const setStatus = async (status: Invoice.StatusEnum) => {
+    await xero().accountingApi.updateInvoice(tenantId, invoiceId, {
+      invoices: [{ status } as Invoice],
+    })
+  }
+  if (snap.status === "DRAFT" || snap.status === "SUBMITTED") {
+    await setStatus(Invoice.StatusEnum.DELETED)
+    return { action: "deleted", status: snap.status, amountPaid: snap.amountPaid }
+  }
+  if (snap.status === "AUTHORISED" && snap.amountPaid === 0 && snap.amountCredited === 0) {
+    await setStatus(Invoice.StatusEnum.VOIDED)
+    return { action: "voided", status: snap.status, amountPaid: snap.amountPaid }
+  }
+  return { action: "manual", status: snap.status, amountPaid: snap.amountPaid }
 }
 
 export async function xeroBankMatchReady(): Promise<boolean> {

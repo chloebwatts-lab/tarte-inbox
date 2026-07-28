@@ -136,6 +136,11 @@ ALTER TABLE inbox_bookings
 ALTER TABLE inbox_threads
   ADD COLUMN IF NOT EXISTS info_followed_up_at timestamptz;
 
+-- Post-event close-out: set once when the day-after sweep has flagged a
+-- finished-but-unsettled event to Louise (approve draft / apply money / chase).
+ALTER TABLE inbox_bookings
+  ADD COLUMN IF NOT EXISTS post_event_flagged_at timestamptz;
+
 -- Tarte-issued deposit invoices (our own PDF, not Xero). One row per invoice;
 -- the bigserial id forms the human invoice number (PREFIX-YYYY-000123).
 CREATE TABLE IF NOT EXISTS inbox_invoices (

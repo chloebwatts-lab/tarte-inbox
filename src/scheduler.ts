@@ -50,6 +50,10 @@ async function dailyTick(): Promise<void> {
       if (nudged) console.log(`[followups] drafted ${nudged} nudge(s)`)
       const { nudged: infoNudged } = await followUpQuietInfoThreads()
       if (infoNudged) console.log(`[followups] drafted ${infoNudged} info follow-up(s)`)
+      // Day-after-event close-out sweep (each booking flagged at most once).
+      const { runPostEventSweep } = await import("./invoice/cancellation.js")
+      const { flagged } = await runPostEventSweep()
+      if (flagged) console.log(`[events] flagged ${flagged} finished-but-unsettled event(s)`)
       await sendDailyDigest()
     }
   } catch (e) {
@@ -148,6 +152,15 @@ export function startScheduler(): void {
       if (processed) console.log(`[scheduler] update-invoice: processed ${processed}`)
     } catch (e) {
       console.error("[scheduler] update-invoice error:", e instanceof Error ? e.message : e)
+    }
+    // Cancellations: staff apply the "Cancel Function" label. Marks the
+    // booking cancelled, cleans up the Xero draft, briefs Louise + Chloe.
+    try {
+      const { runCancellations } = await import("./invoice/cancellation.js")
+      const { processed } = await runCancellations()
+      if (processed) console.log(`[scheduler] cancel-function: processed ${processed}`)
+    } catch (e) {
+      console.error("[scheduler] cancel-function error:", e instanceof Error ? e.message : e)
     }
   }
   // Kick the email tick immediately + on interval.

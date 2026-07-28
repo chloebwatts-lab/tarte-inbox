@@ -207,16 +207,9 @@ export interface ThreadInvoiceResult extends GeneratedInvoice {
 /** Build a full event invoice from an extracted thread. Caller must have
  *  checked invoiceableNow(). When kind is "balance", produces the remaining-
  *  amount invoice (total less the deposit already paid). */
-export async function buildInvoiceFromExtraction(
-  x: InvoiceExtraction,
-  opts: {
-    bookingId: number | null
-    threadId: string
-    todayBrisbane: string
-    kind?: "standard" | "balance"
-  }
-): Promise<ThreadInvoiceResult> {
-  const kind = opts.kind ?? "standard"
+/** The one place invoice line items are derived from an extraction — shared
+ * by the PDF build, the Xero draft sync, and the backfill script. */
+export function lineItemsFromExtraction(x: InvoiceExtraction): LineItem[] {
   const lineItems: LineItem[] = []
   if (x.per_person_price != null && x.guests != null && x.guests > 0) {
     lineItems.push({
@@ -232,6 +225,20 @@ export async function buildInvoiceFromExtraction(
       unitPrice: a.unit_price,
     })
   }
+  return lineItems
+}
+
+export async function buildInvoiceFromExtraction(
+  x: InvoiceExtraction,
+  opts: {
+    bookingId: number | null
+    threadId: string
+    todayBrisbane: string
+    kind?: "standard" | "balance"
+  }
+): Promise<ThreadInvoiceResult> {
+  const kind = opts.kind ?? "standard"
+  const lineItems = lineItemsFromExtraction(x)
   const dateLabel = x.event_date
     ? new Date(`${x.event_date}T00:00:00+10:00`).toLocaleDateString("en-AU", {
         timeZone: "Australia/Brisbane",
@@ -322,13 +329,16 @@ export async function buildInvoiceFromExtraction(
 
 /** One DRAFT Xero invoice per event thread, dated the event date, upserted on
  * every rebuild. Skipped when the event date or customer email is unknown. */
-async function syncXeroEventDraft(
+export async function syncXeroEventDraft(
   invoiceNumber: string,
   threadId: string,
   x: InvoiceExtraction,
   lineItems: LineItem[]
 ): Promise<void> {
   if (!x.event_date || !x.customer_email) return
+  // Manual invoices carry no thread — without a stable key the upsert would
+  // mint a fresh Xero draft on every regenerate, so skip those.
+  if (!threadId) return
   const gross = lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
   if (gross <= 0) return
   const { findOrCreateContact, upsertEventDraftInvoice } = await import("../xero/client.js")
@@ -339,7 +349,7 @@ async function syncXeroEventDraft(
     [threadId]
   )
   const contactId = await findOrCreateContact(x.customer_email, x.customer_name ?? x.customer_email)
-  const xeroId = await upsertEventDraftInvoice({
+  const result = await upsertEventDraftInvoice({
     existingInvoiceId: existing.rows[0]?.xero_invoice_id ?? null,
     contactId,
     reference: `${invoiceNumber} | EVENT ${x.event_date}`,
@@ -351,8 +361,20 @@ async function syncXeroEventDraft(
     })),
   })
   await db().query(`UPDATE inbox_invoices SET xero_invoice_id = $1 WHERE invoice_number = $2`, [
-    xeroId,
+    result.invoiceId,
     invoiceNumber,
   ])
-  console.log(`[invoice] xero DRAFT ${xeroId} synced for ${invoiceNumber} (event ${x.event_date})`)
+  if (!result.updated) {
+    console.warn(`[invoice] xero ${result.invoiceId} NOT updated for ${invoiceNumber}: ${result.skippedReason}`)
+    const { notifyStaff } = await import("./cancellation.js")
+    await notifyStaff(
+      `Xero invoice needs a manual update (${invoiceNumber})`,
+      `The booking behind ${invoiceNumber} changed (event ${x.event_date}, ${x.customer_name ?? x.customer_email}), ` +
+        `but its Xero invoice was not touched because: ${result.skippedReason}.\n\n` +
+        `Please update the Xero invoice by hand so it matches the latest customer invoice, ` +
+        `then apply any payments as usual.`
+    ).catch(() => {})
+    return
+  }
+  console.log(`[invoice] xero DRAFT ${result.invoiceId} synced for ${invoiceNumber} (event ${x.event_date})`)
 }
