@@ -23,7 +23,10 @@ export function xero(): XeroClient {
       "accounting.settings.read",
       // Read bank transactions to verify a deposit landed (re-auth needed once
       // after adding this — until then xeroBankMatchReady() is false).
-      "accounting.transactions.read",
+      // Granular-model name: the legacy "accounting.transactions.read" is
+      // REJECTED by this app with invalid_scope (verified 2026-07-27 by
+      // probing the authorize endpoint).
+      "accounting.banktransactions.read",
     ],
   })
   return client
@@ -189,7 +192,11 @@ export async function createAuthorisedInvoice(opts: {
  * Chris re-authorises after the accounting.transactions.read scope was added. */
 export async function xeroBankMatchReady(): Promise<boolean> {
   const stored = await getTokens("xero")
-  return Boolean(stored?.scope?.split(/\s+/).some((s) => /accounting\.transactions(\.read)?/.test(s)))
+  return Boolean(
+    stored?.scope
+      ?.split(/\s+/)
+      .some((s) => /accounting\.(bank)?transactions(\.read)?$/.test(s))
+  )
 }
 
 export interface MatchedPayment {
