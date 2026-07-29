@@ -337,6 +337,23 @@ export interface MatchedPayment {
   contactName: string
 }
 
+/** All incoming (RECEIVE) bank transactions in the window — one fetch that
+ * callers match locally (the daily event-payments digest does one pull
+ * instead of a Xero call per expected amount). Reconciled txns only. */
+export async function listIncomingBankTransactions(sinceDays = 90): Promise<MatchedPayment[]> {
+  const { tenantId } = await ensureXeroAuthed()
+  const since = new Date(Date.now() - sinceDays * 86400_000)
+  const where = `Type=="RECEIVE" AND Date>=DateTime(${since.getUTCFullYear()},${since.getUTCMonth() + 1},${since.getUTCDate()})`
+  const r = await xero().accountingApi.getBankTransactions(tenantId, undefined, where, "Date DESC")
+  return (r.body.bankTransactions ?? []).map((t) => ({
+    bankTransactionId: t.bankTransactionID ?? "",
+    total: typeof t.total === "number" ? t.total : Number(t.total ?? 0),
+    reference: t.reference ?? "",
+    date: String(t.date ?? ""),
+    contactName: t.contact?.name ?? "",
+  }))
+}
+
 /**
  * Look for an incoming (RECEIVE) bank transaction that matches a deposit: the
  * amount must equal `amount`, and either the reference contains the invoice

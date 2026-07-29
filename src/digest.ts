@@ -296,6 +296,15 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
     // never fail the digest on a side-section
   }
 
+  // Running money view: which event deposits/balances have landed per Xero.
+  try {
+    const { eventPaymentsDigestSection } = await import("./xero/event-payments.js")
+    const money = await eventPaymentsDigestSection()
+    if (money) sections.push(money)
+  } catch (e) {
+    console.error("[digest] event payments section failed:", e instanceof Error ? e.message : e)
+  }
+
   // House notes visibility: any live-guidance note or suggestion added since
   // the last digest is called out so changes to the agent's behaviour are
   // never invisible to Chloe.
