@@ -366,6 +366,16 @@ app.get("/invoices", async (c) => {
  .note{color:#8a8a8a;font-size:12px;margin-top:16px}
 </style>
 <h1>Invoices</h1>
+<div class="note" style="background:#f3f7f6;border-radius:8px;padding:12px 14px;margin:10px 0;font-size:13px;color:#3a3a3a">
+  <b>Please don't hand-make invoices anymore</b> (no more spreadsheet/71xx ones) — hand-made
+  invoices are invisible to payment tracking, Louise's Xero drafts and the daily digest, so
+  they create the exact chasing-up mess we're trying to kill. Every way you need is quicker:<br><br>
+  &bull; <b>New invoice from an email thread</b> — apply the Gmail label <b>"Tarte / Make Invoice"</b> to the thread. Draft + PDF appear in Drafts within ~2 min. If it can't find the price or numbers, it tells you what's missing — write those details into the thread (one line is fine) and re-apply the label.<br>
+  &bull; <b>Numbers changed / deposit paid / any fix</b> — open the invoice via <a href="/invoices">Edit</a> below (or the <b>"Tarte / Update Invoice"</b> label on the thread). Change the field, it regenerates the PDF on the draft for you.<br>
+  &bull; <b>No email thread at all</b> (phone booking) — use <a href="/invoice/new">+ New invoice</a>.<br><br>
+  Facts and policy the agent keeps getting wrong (prices, what we do/don't offer) go in the
+  <b>House notes</b> box on the <a href="https://kitchen.tarte.com.au/inbox-playbooks">playbooks page</a> — not per-invoice fixes.
+</div>
 <p><a href="/invoice/new"><b>+ New invoice</b></a></p>
 <form class="find" action="/invoice/edit" method="get">
   <input type="text" name="n" placeholder="Find by number, e.g. TARTE-2026-00006" size="32">
