@@ -106,39 +106,44 @@ export async function runCancellations(): Promise<{ processed: number }> {
 }
 
 interface SweepRow {
-  id: number
+  thread_id: string
+  invoice_number: string
   customer_name: string | null
-  customer_email: string | null
   event_date: string
-  state: string
-  invoice_number: string | null
   xero_invoice_id: string | null
+  booking_state: string | null
 }
 
-/** Day-after-event sweep: any booking whose event has passed but which never
- * reached paid (and wasn't cancelled) gets ONE flag email to Louise + Chloe —
- * approve the Xero draft, apply the money, chase the balance, or no-show it
- * via the cancel label. Each booking is flagged exactly once. */
+/** Day-after-event sweep: any invoiced event whose date has passed but whose
+ * booking never reached paid (and wasn't cancelled) gets ONE flag email to
+ * Louise + Chloe — approve the Xero draft, apply the money, chase the
+ * balance, or no-show it via the cancel label. Keys off the INVOICE
+ * extraction's event_date (booking rows rarely carry one); each thread is
+ * flagged exactly once. */
 export async function runPostEventSweep(): Promise<{ flagged: number }> {
   const rows = await db().query<SweepRow>(
-    `SELECT b.id, b.customer_name, b.customer_email, b.event_date::text AS event_date, b.state,
-            i.invoice_number, i.xero_invoice_id
-       FROM inbox_bookings b
+    `SELECT DISTINCT ON (i.thread_id)
+            i.thread_id, i.invoice_number, i.customer_name,
+            (i.editable->>'event_date') AS event_date,
+            i.xero_invoice_id, b.state AS booking_state
+       FROM inbox_invoices i
        LEFT JOIN LATERAL (
-         SELECT invoice_number, xero_invoice_id FROM inbox_invoices
-          WHERE thread_id = b.thread_id AND thread_id <> '' ORDER BY id DESC LIMIT 1
-       ) i ON TRUE
-      WHERE b.event_date IS NOT NULL
-        AND b.event_date < (now() AT TIME ZONE 'Australia/Brisbane')::date
-        AND b.state NOT IN ('cancelled', 'paid')
-        AND b.post_event_flagged_at IS NULL`
+         SELECT state FROM inbox_bookings WHERE thread_id = i.thread_id
+          ORDER BY id DESC LIMIT 1
+       ) b ON TRUE
+      WHERE i.thread_id <> ''
+        AND (i.editable->>'event_date') ~ '^\\d{4}-\\d{2}-\\d{2}$'
+        AND (i.editable->>'event_date')::date < (now() AT TIME ZONE 'Australia/Brisbane')::date
+        AND i.post_event_flagged_at IS NULL
+        AND COALESCE(b.state, '') NOT IN ('cancelled', 'paid')
+      ORDER BY i.thread_id, i.id DESC`
   )
   if (!rows.rows.length) return { flagged: 0 }
   const lines = rows.rows.map((r) => {
-    const who = r.customer_name ?? r.customer_email ?? `booking #${r.id}`
+    const who = r.customer_name ?? r.invoice_number
     return [
-      `• ${who} — event ${r.event_date}, booking state: ${r.state}`,
-      r.invoice_number ? `  Invoice ${r.invoice_number}${r.xero_invoice_id ? " (in Xero)" : " (NOT in Xero)"}` : `  No invoice on file`,
+      `• ${who} — event ${r.event_date}${r.booking_state ? `, booking state: ${r.booking_state}` : ""}`,
+      `  Invoice ${r.invoice_number}${r.xero_invoice_id ? " (in Xero)" : " (NOT in Xero)"}`,
       `  To do: approve the Xero draft if still DRAFT, apply the prepayment + any final payment against it,`,
       `  chase the balance if unpaid, or if it was a no-show apply the "${CANCEL_FUNCTION_LABEL}" label to the thread.`,
     ].join("\n")
@@ -146,7 +151,7 @@ export async function runPostEventSweep(): Promise<{ flagged: number }> {
   await notifyStaff(
     `Events finished but not settled — ${rows.rows.length} to close out`,
     [
-      `These events have passed but their bookings never reached "paid". Under the new event-date accounting each needs closing out so the income lands in the right month:`,
+      `These events have passed but were never marked settled. Under the new event-date accounting each needs closing out so the income lands in the right month:`,
       ``,
       lines.join("\n\n"),
       ``,
@@ -154,8 +159,8 @@ export async function runPostEventSweep(): Promise<{ flagged: number }> {
     ].join("\n")
   )
   await db().query(
-    `UPDATE inbox_bookings SET post_event_flagged_at = now() WHERE id = ANY($1::bigint[])`,
-    [rows.rows.map((r) => r.id)]
+    `UPDATE inbox_invoices SET post_event_flagged_at = now() WHERE thread_id = ANY($1::text[])`,
+    [rows.rows.map((r) => r.thread_id)]
   )
   return { flagged: rows.rows.length }
 }

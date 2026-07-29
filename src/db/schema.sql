@@ -138,7 +138,11 @@ ALTER TABLE inbox_threads
 
 -- Post-event close-out: set once when the day-after sweep has flagged a
 -- finished-but-unsettled event to Louise (approve draft / apply money / chase).
+-- Lives on the INVOICE rows (set for every row of the thread) because most
+-- bookings never get event_date populated — the invoice extraction does.
 ALTER TABLE inbox_bookings
+  ADD COLUMN IF NOT EXISTS post_event_flagged_at timestamptz;
+ALTER TABLE inbox_invoices
   ADD COLUMN IF NOT EXISTS post_event_flagged_at timestamptz;
 
 -- Tarte-issued deposit invoices (our own PDF, not Xero). One row per invoice;
