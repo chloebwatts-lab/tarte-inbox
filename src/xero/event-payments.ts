@@ -58,19 +58,26 @@ function fmtDay(iso: string): string {
   })
 }
 
-/** Match an expected amount against the bank feed. Exact amount; name overlap
- * wins, otherwise the first amount-only hit (labelled with the payer seen). */
+/** Match an expected amount against the bank feed. A confirmed match REQUIRES
+ * a payer-name overlap with the customer — amount alone is nowhere near
+ * enough ($880 matched the cash-register takings, $265 matched another
+ * customer's cake, first version of this file). An amount-only hit from a
+ * non-generic payer is surfaced as a "possible" for humans, never persisted. */
+const GENERIC_PAYERS = /cash deposit|lightspeed|stripe|westpac|payclear|square|paypal/i
+
 function findAmount(
   txns: MatchedPayment[],
   amount: number,
   customer: string | null
-): { txn: MatchedPayment; nameMatched: boolean } | null {
+): { txn: MatchedPayment; confirmed: boolean } | null {
   if (amount <= 0) return null
   const hits = txns.filter((t) => Math.abs(t.total - amount) < 0.01)
   if (!hits.length) return null
   const named = hits.find((t) => nameOverlap(customer, t.contactName))
-  if (named) return { txn: named, nameMatched: true }
-  return { txn: hits[0]!, nameMatched: false }
+  if (named) return { txn: named, confirmed: true }
+  const plausible = hits.find((t) => t.contactName && !GENERIC_PAYERS.test(t.contactName))
+  if (plausible) return { txn: plausible, confirmed: false }
+  return null
 }
 
 /** Persist a bank match as a verified payment row (idempotent by invoice +
@@ -151,39 +158,44 @@ export async function eventPaymentsDigestSection(): Promise<string> {
     const knownDeposit = ev.amount_paid ?? 0
     if (knownDeposit > 0 && !verified.some((p) => Math.abs(p.amount - knownDeposit) < 0.01)) {
       const hit = findAmount(txns, knownDeposit, ev.customer_name)
-      if (hit) {
+      if (hit?.confirmed) {
         await recordVerified(
           ev.thread_id,
           ev.invoice_number,
           knownDeposit,
-          `${hit.txn.contactName || "bank"} ${fmtAud(knownDeposit)} on ${hit.txn.date.slice(0, 10)} (digest sweep)`
+          `${hit.txn.contactName} ${fmtAud(knownDeposit)} on ${hit.txn.date.slice(0, 10)} (digest sweep)`
         )
         received += knownDeposit
-        parts.push(
-          `✅ deposit ${fmtAud(knownDeposit)} (${fmtDay(hit.txn.date)}${hit.nameMatched ? "" : `, paid as "${hit.txn.contactName}"`})`
-        )
+        parts.push(`✅ deposit ${fmtAud(knownDeposit)} (${fmtDay(hit.txn.date)})`)
       } else {
-        parts.push(`⏳ deposit ${fmtAud(knownDeposit)} recorded by staff, not seen in feed yet`)
+        // Staff recorded it, the feed can't confirm it — still counts as
+        // received for the balance math (staff-entered beats feed lag).
+        received += knownDeposit
+        parts.push(
+          `☑️ deposit ${fmtAud(knownDeposit)} recorded by staff, not matched in feed` +
+            (hit ? ` (possible: "${hit.txn.contactName}" ${fmtDay(hit.txn.date)})` : "")
+        )
       }
     }
     for (const p of verified) {
-      parts.push(`✅ ${fmtAud(p.amount)} (${(p.matched_reference ?? "verified").slice(0, 45)})`)
+      parts.push(`✅ ${fmtAud(p.amount)} received (${(p.matched_reference ?? "verified").split(" (")[0]})`)
     }
     const remaining = Math.max(0, Math.round((ev.amount - received) * 100) / 100)
     if (remaining > 0.005) {
       const hit = findAmount(txns, remaining, ev.customer_name)
-      if (hit) {
+      if (hit?.confirmed) {
         await recordVerified(
           ev.thread_id,
           ev.invoice_number,
           remaining,
-          `${hit.txn.contactName || "bank"} ${fmtAud(remaining)} on ${hit.txn.date.slice(0, 10)} (digest sweep)`
+          `${hit.txn.contactName} ${fmtAud(remaining)} on ${hit.txn.date.slice(0, 10)} (digest sweep)`
         )
-        parts.push(
-          `✅ balance ${fmtAud(remaining)} (${fmtDay(hit.txn.date)}${hit.nameMatched ? "" : `, paid as "${hit.txn.contactName}"`}) — PAID IN FULL`
-        )
+        parts.push(`✅ balance ${fmtAud(remaining)} (${fmtDay(hit.txn.date)}) — PAID IN FULL 🎉`)
       } else {
-        parts.push(`⏳ balance ${fmtAud(remaining)} outstanding`)
+        parts.push(
+          `⏳ balance ${fmtAud(remaining)} outstanding` +
+            (hit ? ` (possible match: "${hit.txn.contactName}" ${fmtAud(remaining)} ${fmtDay(hit.txn.date)} — confirm)` : "")
+        )
       }
     } else if (parts.length) {
       parts.push("PAID IN FULL 🎉")

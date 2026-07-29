@@ -349,7 +349,9 @@ export async function listIncomingBankTransactions(sinceDays = 90): Promise<Matc
     bankTransactionId: t.bankTransactionID ?? "",
     total: typeof t.total === "number" ? t.total : Number(t.total ?? 0),
     reference: t.reference ?? "",
-    date: String(t.date ?? ""),
+    // The SDK hands back JS Date objects — normalise to ISO so callers can
+    // slice/compare dates without "Invalid Date" surprises.
+    date: t.date ? new Date(t.date as unknown as string | Date).toISOString() : "",
     contactName: t.contact?.name ?? "",
   }))
 }
