@@ -26,6 +26,14 @@ const schema = z.object({
   XERO_REDIRECT_URI: z.string().url(),
 
   TICK_INTERVAL_SECONDS: z.coerce.number().default(120),
+  // Auto-send a location-acknowledgement email to every NEW NBI dine-in
+  // booking that has a guest email (see src/nbi/confirmations.ts). Safe to
+  // leave on even while NBI's export carries no emails — those bookings are
+  // just recorded as skipped.
+  ENABLE_BOOKING_CONFIRMATIONS: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() === "true"),
   ENABLE_AUTO_SEND: z
     .string()
     .default("false")

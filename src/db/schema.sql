@@ -274,3 +274,30 @@ CREATE TABLE IF NOT EXISTS inbox_runs (
   threads_acted     int NOT NULL DEFAULT 0,
   error             text
 );
+
+-- Dine-in booking confirmation emails (NBI bookings -> guest ack of location).
+-- One row per booking_ref, created when we decide what to do with it:
+--   state 'sent'                — confirmation email sent, awaiting guest reply
+--   state 'acknowledged'        — guest replied confirming
+--   state 'skipped_preexisting' — booking predates the feature (seed pass; never emailed)
+--   state 'skipped_no_email'    — NBI gave us no guest email address
+-- venue is our classification at send time: 'tea_garden_high_tea',
+-- 'tea_garden' (regular menu in the Tea Garden, asked the high-tea question)
+-- or 'restaurant' (Main Dining Room).
+CREATE TABLE IF NOT EXISTS inbox_nbi_confirmations (
+  booking_ref     text PRIMARY KEY REFERENCES inbox_nbi_bookings(booking_ref),
+  state           text NOT NULL,
+  venue           text,
+  guest_email     text,
+  message_id      text,
+  thread_id       text,
+  sent_at         timestamptz,
+  acknowledged_at timestamptz,
+  high_tea_answer text,            -- 'yes' | 'no' | 'unclear' (tea_garden asks only)
+  ack_summary     text,            -- one-line summary of the guest's reply
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS inbox_nbi_confirmations_thread_idx
+  ON inbox_nbi_confirmations(thread_id) WHERE thread_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS inbox_nbi_confirmations_state_idx
+  ON inbox_nbi_confirmations(state, sent_at);

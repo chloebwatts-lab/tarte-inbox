@@ -256,6 +256,75 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
           .join("\n")
     )
   }
+  // Dine-in booking confirmations: what went out, who acknowledged, who wants
+  // high tea, and a loud nudge while NBI's export still carries no emails.
+  try {
+    const { confirmationDigestStats } = await import("./nbi/confirmations.js")
+    const conf = await confirmationDigestStats()
+    const who = (r: { first_name: string | null; last_name: string | null }): string =>
+      [r.first_name, r.last_name].filter(Boolean).join(" ") || "Guest"
+    const venueShort = (v: string | null): string =>
+      v === "tea_garden_high_tea" ? "Tea Garden high tea" : v === "tea_garden" ? "Tea Garden" : "Restaurant"
+    const dayStr = (d: string): string =>
+      new Date(`${d}T12:00:00+10:00`).toLocaleDateString("en-AU", {
+        timeZone: "Australia/Brisbane", weekday: "short", day: "numeric", month: "short",
+      })
+    const lines: string[] = []
+    if (conf.sent24h.length) {
+      lines.push(
+        `📨 Booking confirmations sent (last 24h): ${conf.sent24h.length}\n` +
+          conf.sent24h
+            .map((r) => {
+              const status =
+                r.state === "acknowledged"
+                  ? r.high_tea_answer === "yes"
+                    ? "confirmed, WANTS HIGH TEA"
+                    : "confirmed"
+                  : "awaiting reply"
+              return `  • ${dayStr(r.booking_date)} ${r.booking_time.slice(0, 5)} ${who(r)} x${r.pax} (${venueShort(r.venue)}): ${status}`
+            })
+            .join("\n")
+      )
+    }
+    const ackedNotInSent = conf.acked24h.filter(
+      (a) => !conf.sent24h.some((s) => s.booking_ref === a.booking_ref)
+    )
+    if (ackedNotInSent.length) {
+      lines.push(
+        `✅ Confirmations acknowledged (last 24h): ${ackedNotInSent.length}\n` +
+          ackedNotInSent
+            .map(
+              (r) =>
+                `  • ${dayStr(r.booking_date)} ${who(r)} x${r.pax} (${venueShort(r.venue)})${
+                  r.high_tea_answer === "yes" ? ": WANTS HIGH TEA" : ""
+                }${r.ack_summary ? ` (${r.ack_summary})` : ""}`
+            )
+            .join("\n")
+      )
+    }
+    if (conf.highTeaYesUpcoming.length) {
+      lines.push(
+        `🫖 High tea locked in via confirmations (kitchen prep + note on the NBI booking):\n` +
+          conf.highTeaYesUpcoming
+            .map((r) => `  • ${dayStr(r.booking_date)} ${r.booking_time.slice(0, 5)} ${who(r)} x${r.pax}`)
+            .join("\n")
+      )
+    }
+    if (conf.awaitingSoon) {
+      lines.push(
+        `⏳ ${conf.awaitingSoon} confirmation(s) still unanswered for bookings in the next 3 days.`
+      )
+    }
+    if (!conf.sent24h.length && conf.newNoEmail24h) {
+      lines.push(
+        `⚠️  ${conf.newNoEmail24h} new booking(s) came in but NONE could be emailed: Now Book It's daily summary has no guest email addresses. In the NBI admin, edit the Daily Summary report/notification to include guest Email (and Phone). Confirmations start automatically as soon as emails appear.`
+      )
+    }
+    if (lines.length) sections.push(lines.join("\n\n"))
+  } catch (e) {
+    console.error("[digest] confirmations section failed:", e instanceof Error ? e.message : e)
+  }
+
   // NBI sync visibility — and a loud warning if the daily summary email has
   // stopped arriving (availability checks degrade silently without it).
   try {

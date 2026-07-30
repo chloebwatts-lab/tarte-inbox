@@ -1126,6 +1126,32 @@ export async function processThread(
     return false
   }
 
+  // Guest reply on a dine-in booking-confirmation thread: record the ack (and
+  // any high-tea answer) before normal classification. Plain acknowledgements
+  // are archived here and the pipeline stops; questions and change requests
+  // fall through to the classifier/drafter like any other customer email.
+  if (!fromUs) {
+    try {
+      const { handleConfirmationReply } = await import("./nbi/confirmations.js")
+      if (await handleConfirmationReply(threadId)) {
+        await upsertThread({
+          thread_id: threadId,
+          last_message_id: latest.id,
+          last_history_id: thread.historyId ?? null,
+          category: "bookings_dine_in",
+          state: "ack_recorded",
+          last_action: "booking_ack",
+        })
+        return true
+      }
+    } catch (e) {
+      console.error(
+        `[confirm] ack intercept failed for ${threadId}:`,
+        e instanceof Error ? e.message : e
+      )
+    }
+  }
+
   // Skip if no human-facing message (e.g. fully internal/automated)
   if (fromUs) {
     // If staff replied to a thread we'd flagged for them (needs_human etc.),

@@ -67,6 +67,7 @@ CRITICAL rules:
 - ready_to_invoice = true ONLY when ALL hold: booking_type is "private_hire"; customer_confirmed is true; a specific DATE is confirmed/held; the PACKAGE and a real PER-PERSON PRICE that was actually quoted in the thread are known; and the GUEST COUNT is given. In EVERY other case ready_to_invoice = false (list what's missing). When in any doubt, false.
 - NEVER invent a price or a deposit. If the per-person price was not actually stated in the thread, leave per_person_price null and ready_to_invoice false. Do NOT fabricate a "$500 save-the-date" line — only include a deposit/amount the thread actually agreed.
 - per_person_price is the BASE package price ONLY. Anything you list in add_ons must NOT also be folded into per_person_price — the invoice adds them as separate lines, so including them in both double-charges the customer (e.g. $89 package + $10 charcuterie + $22 steak means per_person_price 89, NOT 121).
+- add_ons are EXTRA CHARGEABLE ITEMS only (drinks package, grazing board, cake, styling, room hire). NEVER copy rows you see in a previously sent invoice or quote inside the thread — "Remaining balance", "Total", "Subtotal", "GST", "Deposit", "Save-the-date deposit", "Payment received", "Balance due" are invoice OUTPUTS, not add-ons. Echoing them multiplies the invoice into garbage. A deposit already paid is a PAYMENT, never an add_on line.
 - Use the MOST RECENT agreed value when something changes (e.g. 32 guests later revised to 30 → 30).
 - Resolve relative/partial dates ("9th August") to YYYY-MM-DD using the TODAY line. Dates must be in the future.
 - customer_email: the customer's real address (not hello@tarte.com.au).`
@@ -207,18 +208,33 @@ export interface ThreadInvoiceResult extends GeneratedInvoice {
 /** Build a full event invoice from an extracted thread. Caller must have
  *  checked invoiceableNow(). When kind is "balance", produces the remaining-
  *  amount invoice (total less the deposit already paid). */
+/** Derived/summary rows that must never appear as chargeable line items. The
+ * extractor occasionally echoes rows from an invoice already sent in the
+ * thread ("Remaining balance", "Total", "Save-the-date deposit") back as
+ * add_ons — with per_person=true that turned a $2,225 high tea into a
+ * $101,475 invoice (TARTE-2026-00022, caught 2026-07-30). Deposits paid are
+ * payments (amount_paid), not charges. */
+const SUMMARY_ROW_RE =
+  /\b(remaining|balance|total|subtotal|gst|deposit|save[\s-]*the[\s-]*date|payment|paid|amount\s+due|due\s+now)\b/i
+
 /** The one place invoice line items are derived from an extraction — shared
  * by the PDF build, the Xero draft sync, and the backfill script. */
 export function lineItemsFromExtraction(x: InvoiceExtraction): LineItem[] {
   const lineItems: LineItem[] = []
   if (x.per_person_price != null && x.guests != null && x.guests > 0) {
     lineItems.push({
-      description: x.package_name ?? `High Tea${x.venue_space ? ` — ${x.venue_space}` : ""}`,
+      description: x.package_name ?? `High Tea${x.venue_space ? ` - ${x.venue_space}` : ""}`,
       qty: x.guests,
       unitPrice: x.per_person_price,
     })
   }
   for (const a of x.add_ons) {
+    if (SUMMARY_ROW_RE.test(a.description)) {
+      console.warn(
+        `[invoice] dropped summary-row add-on "${a.description}" ($${a.unit_price}${a.per_person ? " pp" : ""}) — derived totals are never line items`
+      )
+      continue
+    }
     lineItems.push({
       description: a.description,
       qty: a.per_person && x.guests ? x.guests : 1,

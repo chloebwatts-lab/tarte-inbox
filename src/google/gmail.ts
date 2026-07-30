@@ -532,14 +532,15 @@ export async function sendInThreadReply(
   return r.data.id
 }
 
-/** Plain-text email in a new thread (used for the daily digest). */
+/** Plain-text email in a new thread (daily digest, booking confirmations).
+ * Returns the sent message + thread ids so callers can track replies. */
 export async function sendPlainEmail(
   to: string,
   subject: string,
   bodyText: string,
   fromEmail: string,
   fromName?: string
-): Promise<string> {
+): Promise<{ id: string; threadId: string | null }> {
   const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
   const rfc822 = [
     `From: ${fromHeader}`,
@@ -557,7 +558,7 @@ export async function sendPlainEmail(
     requestBody: { raw: encodeRaw(rfc822) },
   })
   if (!r.data.id) throw new Error("digest send returned no id")
-  return r.data.id
+  return { id: r.data.id, threadId: r.data.threadId ?? null }
 }
 
 /**

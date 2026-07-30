@@ -82,6 +82,15 @@ async function nbiTick(): Promise<void> {
   } finally {
     nbiRunning = false
   }
+  // New bookings get their location-acknowledgement email right after ingest
+  // (the daily summary lands ~06:00, so these go out with the morning batch).
+  try {
+    const { sendBookingConfirmations } = await import("./nbi/confirmations.js")
+    const c = await sendBookingConfirmations()
+    if (c.sent) console.log(`[confirm] sent ${c.sent} booking confirmation(s)`)
+  } catch (e) {
+    console.error("[confirm] error:", e instanceof Error ? e.message : e)
+  }
   // Mirror everything into the combined staff calendar after each ingest.
   try {
     const { syncCombinedCalendar } = await import("./google/calendar-sync.js")
