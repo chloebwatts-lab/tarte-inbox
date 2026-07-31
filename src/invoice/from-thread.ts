@@ -365,10 +365,20 @@ export async function syncXeroEventDraft(
     [threadId]
   )
   const contactId = await findOrCreateContact(x.customer_email, x.customer_name ?? x.customer_email)
+  // One Xero draft per event thread, but a thread can hold two TARTE numbers
+  // (deposit + balance). Anchor the Xero invoice number to the thread's FIRST
+  // number so it never flips between rebuilds.
+  const firstNum = await db().query<{ invoice_number: string }>(
+    `SELECT invoice_number FROM inbox_invoices
+      WHERE thread_id = $1 AND invoice_number <> 'PENDING'
+      ORDER BY id LIMIT 1`,
+    [threadId]
+  )
   const result = await upsertEventDraftInvoice({
     existingInvoiceId: existing.rows[0]?.xero_invoice_id ?? null,
     contactId,
     reference: `${invoiceNumber} | EVENT ${x.event_date}`,
+    invoiceNumber: firstNum.rows[0]?.invoice_number ?? invoiceNumber,
     eventDate: x.event_date,
     lines: lineItems.map((li) => ({
       description: li.description,

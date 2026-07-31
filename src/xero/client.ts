@@ -249,6 +249,11 @@ export async function upsertEventDraftInvoice(opts: {
   reference: string
   eventDate: string // YYYY-MM-DD — becomes the invoice date AND due date
   lines: InvoiceLine[]
+  // Our TARTE-YYYY-NNNNN number, set as the Xero invoice number so the
+  // numbers staff see in email match what Matt finds in Xero (his 2026-07-31
+  // gripe: "the invoice numbers in your email are not in Xero"). Xero mints
+  // its own INV-00xx when this is omitted.
+  invoiceNumber?: string
 }): Promise<EventDraftResult> {
   const { tenantId } = await ensureXeroAuthed()
   const accountCode = await resolveEventSalesAccountCode()
@@ -256,6 +261,7 @@ export async function upsertEventDraftInvoice(opts: {
     type: Invoice.TypeEnum.ACCREC,
     contact: { contactID: opts.contactId },
     reference: opts.reference,
+    ...(opts.invoiceNumber ? { invoiceNumber: opts.invoiceNumber } : {}),
     date: opts.eventDate,
     dueDate: opts.eventDate,
     lineItems: opts.lines.map((l) => ({
