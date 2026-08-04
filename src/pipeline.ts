@@ -34,6 +34,7 @@ import {
   type ParsedMessage,
 } from "./google/gmail.js"
 import { isSlotFree, createEvent, eventsOnDate, upsertReminderEvent, type Venue } from "./google/calendar.js"
+import { ensureCombinedCalendar } from "./google/calendar-sync.js"
 import { driveReady, uploadInvoicePdf } from "./google/drive.js"
 import {
   fetchCustomerHistory,
@@ -138,6 +139,9 @@ export const INVOICE_SENT_LABEL = "Tarte / Invoice sent"
 // Squarespace takeaway high tea orders — labelled + a pickup reminder goes on
 // the staff calendar so the kitchen preps for the date.
 export const TAKEAWAY_HT_LABEL = "Tarte / Takeaway High Tea"
+// Squarespace cake orders — labelled + a colour-coded pickup event goes on the
+// combined bookings calendar so cakes sit alongside the high teas & functions.
+export const CAKE_ORDER_LABEL = "Tarte / Cake order"
 // Table bookings of 12+ guests — foldered so staff can eyeball every large
 // group at a glance (these need a set menu Fri-Sun).
 export const LARGE_BOOKING_LABEL = "Tarte / 12+ booking"
@@ -223,14 +227,29 @@ export async function sweepSpam(): Promise<{ scanned: number; rescued: number }>
   return { scanned, rescued }
 }
 
-// --- Squarespace takeaway high tea orders ---
+// --- Squarespace takeaway high tea + cake orders ---
 // Order notifications come from no-reply@squarespace.com ("Tarte.: A New Order
-// has Arrived (02846)"). When the items include a high tea and there's a
-// requested pickup date, label the thread and put a pickup reminder on the
-// staff calendar so the kitchen preps for it.
+// has Arrived (02846)"). High tea orders get a pickup reminder on the staff
+// calendar; cake orders get a colour-coded pickup event on the combined
+// bookings calendar, alongside the high teas and functions, so the kitchen
+// sees every cake due date at a glance.
 
 const SQUARESPACE_ORDER_FROM = /no-reply@squarespace\.com/i
 const SQUARESPACE_ORDER_SUBJECT = /new order has arrived \((\d+)\)/i
+// Cake pickups wear their own colour so they're instantly distinguishable from
+// the default-coloured high teas and functions on the combined calendar.
+// "4" = Flamingo (pink) in Google Calendar's event palette.
+const CAKE_EVENT_COLOR_ID = "4"
+
+/** Order-item lines mentioning a cake, for the event description. Best-effort
+ * — Squarespace layouts vary, so an empty result just means a shorter note. */
+function cakeItemLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /\bcakes?\b/i.test(l) && !/pickup/i.test(l))
+    .slice(0, 4)
+}
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -245,9 +264,13 @@ async function maybeHandleTakeawayOrder(
   if (!subj) return false
   const orderNo = subj[1]!
   const text = latest.bodyText
-  // Only takeaway HIGH TEA orders get the label + reminder; plain bakery/gift
-  // card orders fall through to the normal automated-receipt archive.
-  if (!/high ?tea/i.test(text)) return false
+  // High tea orders take priority (an order with both is prepped as a high
+  // tea); cake orders get their own calendar treatment. Anything else (plain
+  // bakery/gift card orders) falls through to the automated-receipt archive.
+  // "\bcakes?\b" deliberately misses "cheesecake" slices — whole cakes only.
+  const isHighTea = /high ?tea/i.test(text)
+  const isCake = !isHighTea && /\bcakes?\b/i.test(text)
+  if (!isHighTea && !isCake) return false
 
   // Pickup date arrives in several formats depending on the product:
   //   "Requested Pickup Date: 12/Jul Sunday."      (bakery items)
@@ -294,7 +317,8 @@ async function maybeHandleTakeawayOrder(
     dateStr = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`
   }
 
-  await applyLabel(thread.threadId, TAKEAWAY_HT_LABEL).catch(() => {})
+  await applyLabel(thread.threadId, isHighTea ? TAKEAWAY_HT_LABEL : CAKE_ORDER_LABEL).catch(() => {})
+  const tag = isHighTea ? "takeaway" : "cake"
   if (dateStr) {
     let time: string | undefined
     if (timeM) {
@@ -305,30 +329,54 @@ async function maybeHandleTakeawayOrder(
       time = `${String(hh).padStart(2, "0")}:${timeM[2]}`
     }
     try {
-      await upsertReminderEvent({
-        calendarId: config().TAKEAWAY_REMINDER_CALENDAR_ID,
-        id: `sqorder${orderNo}`,
-        summary: `TAKEAWAY HIGH TEA PICKUP — ${customer}${time ? ` ${time}` : ""} (order #${orderNo})`,
-        description: `Squarespace order #${orderNo} — takeaway high tea pickup.\nCustomer: ${customer}\n(Auto-created from the order email.)`,
-        date: dateStr,
-        startTime: time,
-      })
-      console.log(`[takeaway] order #${orderNo} (${customer}) — reminder on ${dateStr}${time ? ` ${time}` : ""}`)
+      if (isHighTea) {
+        await upsertReminderEvent({
+          calendarId: config().TAKEAWAY_REMINDER_CALENDAR_ID,
+          id: `sqorder${orderNo}`,
+          summary: `TAKEAWAY HIGH TEA PICKUP — ${customer}${time ? ` ${time}` : ""} (order #${orderNo})`,
+          description: `Squarespace order #${orderNo} — takeaway high tea pickup.\nCustomer: ${customer}\n(Auto-created from the order email.)`,
+          date: dateStr,
+          startTime: time,
+        })
+      } else {
+        // Cakes live on the combined bookings calendar so they sit next to the
+        // high teas and functions; fall back to the staff calendar when the
+        // token can't reach/create the combined one.
+        const calendarId =
+          (await ensureCombinedCalendar().catch(() => null)) ??
+          config().TAKEAWAY_REMINDER_CALENDAR_ID
+        const items = cakeItemLines(text)
+        await upsertReminderEvent({
+          calendarId,
+          id: `sqcake${orderNo}`,
+          summary: `CAKE PICKUP — ${customer}${time ? ` ${time}` : ""} (order #${orderNo})`,
+          description:
+            `Squarespace order #${orderNo} — cake pickup.\nCustomer: ${customer}` +
+            (items.length ? `\n${items.join("\n")}` : "") +
+            `\n(Auto-created from the order email.)`,
+          date: dateStr,
+          startTime: time,
+          colorId: CAKE_EVENT_COLOR_ID,
+        })
+      }
+      console.log(`[${tag}] order #${orderNo} (${customer}) — pickup on calendar for ${dateStr}${time ? ` ${time}` : ""}`)
     } catch (e) {
-      console.error(`[takeaway] reminder for order #${orderNo} failed:`, e instanceof Error ? e.message : e)
+      console.error(`[${tag}] calendar event for order #${orderNo} failed:`, e instanceof Error ? e.message : e)
       await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
     }
   } else {
-    // No pickup date found — flag so a human adds the reminder manually.
+    // No pickup date found — flag so a human adds the calendar entry manually.
     await applyLabel(thread.threadId, ACTION_LABEL).catch(() => {})
-    console.warn(`[takeaway] order #${orderNo} — no pickup date parsed, flagged`)
+    console.warn(`[${tag}] order #${orderNo} — no pickup date parsed, flagged`)
   }
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
     state: "classified",
-    last_action: "takeaway_ht_order",
-    meta: { takeawayOrder: orderNo, pickupDate: dateStr ?? null, customer },
+    last_action: isHighTea ? "takeaway_ht_order" : "cake_order",
+    meta: isHighTea
+      ? { takeawayOrder: orderNo, pickupDate: dateStr ?? null, customer }
+      : { cakeOrder: orderNo, pickupDate: dateStr ?? null, customer },
   })
   return true
 }
@@ -1293,7 +1341,7 @@ export async function processThread(
     return true
   }
 
-  // Squarespace TAKEAWAY HIGH TEA orders: label + pickup reminder on the staff
+  // Squarespace TAKEAWAY HIGH TEA + CAKE orders: label + pickup event on the
   // calendar. Must run before the automated-receipt archive below (the order
   // email comes from no-reply@squarespace.com).
   if (await maybeHandleTakeawayOrder(thread, latest)) return true

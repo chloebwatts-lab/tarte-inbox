@@ -34,6 +34,7 @@ export async function upsertReminderEvent(e: {
   date: string // YYYY-MM-DD (Brisbane)
   startTime?: string // HH:MM 24h
   durationMinutes?: number
+  colorId?: string // Google Calendar event colour ("1"-"11"); omit = calendar default
 }): Promise<void> {
   const c = await cal()
   let body: calendar_v3.Schema$Event
@@ -45,6 +46,7 @@ export async function upsertReminderEvent(e: {
       description: e.description,
       start: { dateTime: start.toISOString(), timeZone: "Australia/Brisbane" },
       end: { dateTime: end.toISOString(), timeZone: "Australia/Brisbane" },
+      colorId: e.colorId,
     }
   } else {
     body = {
@@ -52,6 +54,7 @@ export async function upsertReminderEvent(e: {
       description: e.description,
       start: { date: e.date },
       end: { date: e.date },
+      colorId: e.colorId,
     }
   }
   try {
