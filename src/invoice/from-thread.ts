@@ -357,7 +357,16 @@ export async function syncXeroEventDraft(
   if (!threadId) return
   const gross = lineItems.reduce((s, li) => s + li.qty * li.unitPrice, 0)
   if (gross <= 0) return
-  const { findOrCreateContact, upsertEventDraftInvoice } = await import("../xero/client.js")
+  const { findOrCreateContact, upsertEventDraftInvoice, resolveOnlineSalesAccountCode } =
+    await import("../xero/client.js")
+  // Matt's rule (28 Jul 2026): standalone cake/goods orders belong with the
+  // Stripe website cakes in 44097 Sales - Online, not Event Sales. A function
+  // is anything with a per-person package; a cake order has goods lines only.
+  const isCakeOrder =
+    x.per_person_price == null &&
+    lineItems.length > 0 &&
+    lineItems.some((li) => /cake|croquembouche|dessert|pastry box|croissant box/i.test(li.description))
+  const goodsAccountCode = isCakeOrder ? await resolveOnlineSalesAccountCode() : undefined
   const existing = await db().query<{ xero_invoice_id: string }>(
     `SELECT xero_invoice_id FROM inbox_invoices
       WHERE thread_id = $1 AND thread_id <> '' AND xero_invoice_id IS NOT NULL
@@ -384,6 +393,7 @@ export async function syncXeroEventDraft(
       description: li.description,
       quantity: li.qty,
       unitAmount: li.unitPrice,
+      accountCode: goodsAccountCode,
     })),
   })
   await db().query(`UPDATE inbox_invoices SET xero_invoice_id = $1 WHERE invoice_number = $2`, [

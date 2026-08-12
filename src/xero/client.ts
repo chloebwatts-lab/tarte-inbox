@@ -230,6 +230,27 @@ export async function resolveEventSalesAccountCode(): Promise<string> {
   return eventSalesCode
 }
 
+/** Standalone cake / goods orders go to Matt's 44097 "Sales - Online" (same
+ * account as the Stripe website cakes) rather than Event Sales. Verified at
+ * runtime; falls back to the event account if 44097 ever disappears. */
+let onlineSalesCode: string | null = null
+export async function resolveOnlineSalesAccountCode(): Promise<string> {
+  if (onlineSalesCode) return onlineSalesCode
+  const { tenantId } = await ensureXeroAuthed()
+  const r = await xero().accountingApi.getAccounts(tenantId, undefined, 'Class=="REVENUE"')
+  const accounts = (r.body.accounts ?? []).filter((a) => a.code)
+  const pick =
+    accounts.find((a) => a.code === "44097") ??
+    accounts.find((a) => /sales\s*-?\s*online|online\s*sales/i.test(a.name ?? ""))
+  if (!pick?.code) {
+    console.warn("[xero] 44097 Sales - Online not found — cake orders will use the event account")
+    return resolveEventSalesAccountCode()
+  }
+  onlineSalesCode = pick.code
+  console.log(`[xero] cake/goods lines will use revenue account ${pick.code} (${pick.name})`)
+  return onlineSalesCode
+}
+
 async function getInvoiceSnapshot(
   tenantId: string,
   invoiceId: string
