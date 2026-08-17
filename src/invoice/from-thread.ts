@@ -45,7 +45,7 @@ Output STRICT JSON only:
   "booking_type": "private_hire" | "table_booking" | "unknown",
   "customer_confirmed": <true|false>,
   "ready_to_invoice": <true|false>,
-  "customer_name": "<string|null>",
+  "customer_name": "<the person's own full name, as they sign off. NOT their employer, venue, or business name, even when they book from a work address — this becomes the Xero contact Louise matches bank payments against, and a transfer from a person will never match a company. Use a business name ONLY when the booking is explicitly to be billed to that business|null>",
   "customer_email": "<email|null>",
   "event_type": "<e.g. Baby Shower|null>",
   "package_name": "<e.g. Private High Tea in The Hideout|null>",
@@ -383,11 +383,20 @@ export async function syncXeroEventDraft(
       ORDER BY id LIMIT 1`,
     [threadId]
   )
+  // The Xero invoice number is anchored to the thread's first TARTE number so
+  // it can't flip between rebuilds, so the reference has to use the same anchor
+  // or the two disagree — Janine Reed 31 Jul 2026 sat in Xero as invoice 00015
+  // with reference 00016, and Louise had no way to tell which the customer
+  // held. Where the thread has since raised a later number (deposit, then
+  // balance), name both so a payment quoting either one still matches.
+  const anchorNumber = firstNum.rows[0]?.invoice_number ?? invoiceNumber
+  const numberLabel =
+    invoiceNumber === anchorNumber ? anchorNumber : `${anchorNumber} + ${invoiceNumber}`
   const result = await upsertEventDraftInvoice({
     existingInvoiceId: existing.rows[0]?.xero_invoice_id ?? null,
     contactId,
-    reference: `${invoiceNumber} | EVENT ${x.event_date}`,
-    invoiceNumber: firstNum.rows[0]?.invoice_number ?? invoiceNumber,
+    reference: `${numberLabel} | EVENT ${x.event_date}`,
+    invoiceNumber: anchorNumber,
     eventDate: x.event_date,
     lines: lineItems.map((li) => ({
       description: li.description,
