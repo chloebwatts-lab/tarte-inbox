@@ -29,10 +29,19 @@ function fmt(n: number): string {
   return `$${n.toFixed(2)}`
 }
 
-/** xero-node errors embed the Bearer token — surface the message only. */
+/**
+ * xero-node rejects with a plain object whose `request.headers.authorization`
+ * holds the live Bearer token, and it is NOT an Error, so `String(e)` prints
+ * the token. Never stringify the value — pull out named fields only.
+ */
 function safeErr(e: unknown): string {
-  if (e instanceof Error) return e.message
-  return String(e)
+  if (e instanceof Error && e.message) return e.message
+  const r = (e as { response?: { statusCode?: number; body?: { Detail?: string } } })?.response
+  if (r?.statusCode) {
+    const scope = r.statusCode === 401 ? " — the app's Xero scopes don't cover this endpoint" : ""
+    return `HTTP ${r.statusCode}${r.body?.Detail ? ` (${r.body.Detail})` : ""}${scope}`
+  }
+  return "unknown error (details suppressed: xero-node errors embed the bearer token)"
 }
 
 function dateOf(v: unknown): string {
