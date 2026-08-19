@@ -37,6 +37,22 @@ async function healthTick(): Promise<void> {
 
 const NBI_INTERVAL_MS = 60 * 60 * 1000 // 1 hour — sweeps last 7 days; idempotent
 const DAILY_CHECK_INTERVAL_MS = 10 * 60 * 1000 // digest + nudges checked every 10 min
+const UNREAD_SWEEP_INTERVAL_MS = 10 * 60 * 1000 // pending drafts re-marked unread
+
+let unreadTimer: NodeJS.Timeout | undefined
+let unreadRunning = false
+
+async function unreadTick(): Promise<void> {
+  if (unreadRunning) return
+  unreadRunning = true
+  try {
+    await reassertDraftUnread()
+  } catch (e) {
+    console.error("[unread] sweep error:", e instanceof Error ? e.message : e)
+  } finally {
+    unreadRunning = false
+  }
+}
 
 async function dailyTick(): Promise<void> {
   if (dailyRunning) return
@@ -112,12 +128,6 @@ async function nbiTick(): Promise<void> {
   } catch (e) {
     console.error("[spam] sweep error:", e instanceof Error ? e.message : e)
   }
-  // Keep threads with pending drafts UNREAD so staff can't lose them.
-  try {
-    await reassertDraftUnread()
-  } catch (e) {
-    console.error("[unread] sweep error:", e instanceof Error ? e.message : e)
-  }
   // Coverage sentinel: the end-to-end "no customer left unanswered" invariant.
   // Independent of the pipeline by design — alerts via the watchdog.
   try {
@@ -185,12 +195,22 @@ export function startScheduler(): void {
   void dailyTick()
   dailyTimer = setInterval(() => void dailyTick(), DAILY_CHECK_INTERVAL_MS)
 
+  // Keep threads with pending drafts UNREAD so staff can't lose them. Was
+  // hourly inside nbiTick; the girls read on their phones and re-scan the
+  // inbox minutes later, so an hour of "looks handled" cost them trust
+  // (Chloe, 2026-08-19). Every 10 min now — it's a handful of cheap
+  // metadata reads.
+  void unreadTick()
+  unreadTimer = setInterval(() => void unreadTick(), UNREAD_SWEEP_INTERVAL_MS)
+
   // Watchdog: quick health checks every 15 min (alerts by email on failure).
   void healthTick()
   healthTimer = setInterval(() => void healthTick(), HEALTH_INTERVAL_MS)
 }
 
 export function stopScheduler(): void {
+  if (unreadTimer) clearInterval(unreadTimer)
+  unreadTimer = undefined
   if (timer) clearInterval(timer)
   if (nbiTimer) clearInterval(nbiTimer)
   if (dailyTimer) clearInterval(dailyTimer)

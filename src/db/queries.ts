@@ -96,11 +96,18 @@ export async function upsertThread(t: {
      VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'classified'), $7, now(), COALESCE($8, '{}'::jsonb))
      ON CONFLICT (thread_id) DO UPDATE
        SET last_message_id   = EXCLUDED.last_message_id,
-           last_history_id   = EXCLUDED.last_history_id,
+           last_history_id   = COALESCE($3::text, inbox_threads.last_history_id),
            category          = COALESCE(EXCLUDED.category, inbox_threads.category),
            confidence        = COALESCE(EXCLUDED.confidence, inbox_threads.confidence),
-           state             = COALESCE(EXCLUDED.state, inbox_threads.state),
-           last_action       = COALESCE(EXCLUDED.last_action, inbox_threads.last_action),
+           -- Partial updates (no state given) must KEEP the stored state. Using
+           -- EXCLUDED.state here was a bug: the INSERT list defaults it to
+           -- 'classified', so EXCLUDED.state is never null and every
+           -- historyId-only refresh (a girl merely READING a thread changes its
+           -- historyId) silently reset 'drafted' / 'sent_by_human' back to
+           -- 'classified' — dropping threads out of the unread sweep, the
+           -- review queue and the digest (found 2026-08-19).
+           state             = COALESCE($6::text, inbox_threads.state),
+           last_action       = COALESCE($7::text, inbox_threads.last_action),
            last_processed_at = now(),
            meta              = inbox_threads.meta || EXCLUDED.meta`,
     [

@@ -1,5 +1,6 @@
 import { google, type gmail_v1 } from "googleapis"
 import { ensureGoogleAuthed } from "./oauth.js"
+import { config } from "../config.js"
 
 async function gmail(): Promise<gmail_v1.Gmail> {
   const auth = await ensureGoogleAuthed()
@@ -290,7 +291,7 @@ export async function markThreadRead(threadId: string): Promise<void> {
  * by the hourly sweep that keeps drafted threads bold until actioned. */
 export async function threadDraftReadState(
   threadId: string
-): Promise<{ hasDraft: boolean; unread: boolean; trashed: boolean }> {
+): Promise<{ hasDraft: boolean; unread: boolean; trashed: boolean; repliedByUs: boolean; latestRealAt: Date | null }> {
   const g = await gmail()
   const r = await g.users.threads.get({ userId: "me", id: threadId, format: "minimal" })
   const msgs = r.data.messages ?? []
@@ -302,6 +303,10 @@ export async function threadDraftReadState(
     // Staff deleting a thread means "we're not responding" — the agent must
     // back off it completely rather than keep resurfacing it.
     trashed: (latest?.labelIds ?? []).includes("TRASH"),
+    // Our reply is the newest real message — a human has actually answered
+    // (even if a stale draft still hangs off the thread). Never nag these.
+    repliedByUs: (latest?.labelIds ?? []).includes("SENT"),
+    latestRealAt: latest?.internalDate ? new Date(Number(latest.internalDate)) : null,
   }
 }
 
@@ -474,18 +479,54 @@ export async function getThreadDraftBody(threadId: string): Promise<string | nul
   try {
     const g = await gmail()
     const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
-    const d = (r.data.drafts ?? []).find((d) => d.message?.threadId === threadId)
-    if (!d?.id) return null
-    const full = await g.users.drafts.get({ userId: "me", id: d.id, format: "full" })
-    const { text, html } = extractBody(full.data.message?.payload ?? undefined)
-    const body = (text || stripHtml(html)).trim()
-    return body || null
+    const candidates = (r.data.drafts ?? []).filter((d) => d.message?.threadId === threadId && d.id)
+    for (const d of candidates) {
+      const full = await g.users.drafts.get({ userId: "me", id: d.id!, format: "full" })
+      // Skip our own internal note drafts (addressed to the mailbox itself) —
+      // they must never be mistaken for a staff-written customer reply.
+      if (isOurNoteMessage(full.data.message)) continue
+      const { text, html } = extractBody(full.data.message?.payload ?? undefined)
+      const body = (text || stripHtml(html)).trim()
+      return body || null
+    }
+    return null
   } catch (e) {
     console.warn(
       `[gmail] could not read pending draft for thread ${threadId}:`,
       e instanceof Error ? e.message : e
     )
     return null
+  }
+}
+
+/** Internal note drafts (Make-Invoice "couldn't build" notes etc.) are
+ * addressed to the mailbox itself, from itself. */
+function isOurNoteMessage(msg: gmail_v1.Schema$Message | undefined): boolean {
+  if (!msg) return false
+  const to = (header(msg, "To") ?? "").toLowerCase()
+  const hello = config().HELLO_MAILBOX.toLowerCase()
+  return to.includes(hello)
+}
+
+/** Delete our internal note drafts on a thread (leaves customer-facing drafts
+ * and anything staff are writing alone). */
+export async function deleteOurNoteDrafts(threadId: string): Promise<number> {
+  try {
+    const g = await gmail()
+    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
+    let deleted = 0
+    for (const d of r.data.drafts ?? []) {
+      if (d.message?.threadId !== threadId || !d.id) continue
+      const meta = await g.users.drafts.get({ userId: "me", id: d.id, format: "metadata" })
+      if (isOurNoteMessage(meta.data.message)) {
+        await deleteDraft(d.id)
+        deleted++
+      }
+    }
+    return deleted
+  } catch (e) {
+    console.warn(`[gmail] could not sweep note drafts for ${threadId}:`, e instanceof Error ? e.message : e)
+    return 0
   }
 }
 

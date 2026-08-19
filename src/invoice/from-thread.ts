@@ -6,6 +6,8 @@ import { anthropic, MODEL } from "../llm/client.js"
 import type { ParsedThread } from "../google/gmail.js"
 import { renderFullThread } from "../lib/thread-text.js"
 import { db } from "../db/pool.js"
+import { normaliseEventDate, isIsoDate } from "../lib/dates.js"
+import { config } from "../config.js"
 import {
   generateInvoice,
   type LineItem,
@@ -27,6 +29,11 @@ export interface InvoiceExtraction {
   time_label: string | null // e.g. "11:00am - 2:00pm"
   dietaries: string | null // any dietary requirements given, e.g. "2x GF, 1x vegan"
   deposit_pct: number | null
+  // A FIXED save-the-date / holding deposit that staff or the thread named
+  // explicitly (e.g. "a $500 deposit secures the date"), used when the package
+  // and numbers aren't locked yet. Renders as a single "Save-the-date deposit"
+  // line, full amount due now — never invented; null unless actually stated.
+  flat_deposit_amount?: number | null
   add_ons: Array<{ description: string; unit_price: number; per_person: boolean }>
   confidence: number
   missing: string[] // what's still needed before invoicing, if any
@@ -56,6 +63,7 @@ Output STRICT JSON only:
   "time_label": "<e.g. 11:00am - 2:00pm|null>",
   "dietaries": "<any dietary requirements/allergies the customer gave for the group, e.g. '2x gluten free, 1x vegan, 1x nut allergy'|null>",
   "deposit_pct": <number|null>,
+  "flat_deposit_amount": <number|null — a FIXED save-the-date / holding deposit that was explicitly stated in the thread (by our staff or agreed with the customer), e.g. "a $500 deposit secures the date" → 500. Only when the package/per-person pricing is NOT yet locked in. null if no fixed amount was actually stated>,
   "add_ons": [{"description":"<e.g. Unlimited Drinks Package>","unit_price":<number>,"per_person":<true|false>}],
   "confidence": <0..1>,
   "missing": ["<field names still needed>"]
@@ -65,7 +73,8 @@ CRITICAL rules:
 - booking_type: "private_hire" only when the customer clearly wants exclusive/private use or a styled private function (Hideout, private Tea Garden section, whole-venue). A group asking for a table / breakfast / brunch / lunch booking, or asking to "confirm availability", is "table_booking". If unclear, "unknown".
 - customer_confirmed = true ONLY when the CUSTOMER has explicitly said they want to go ahead / lock it in / pay the deposit / "please invoice me". Merely asking for availability, prices, packages, or options is NOT confirmation.
 - ready_to_invoice = true ONLY when ALL hold: booking_type is "private_hire"; customer_confirmed is true; a specific DATE is confirmed/held; the PACKAGE and a real PER-PERSON PRICE that was actually quoted in the thread are known; and the GUEST COUNT is given. In EVERY other case ready_to_invoice = false (list what's missing). When in any doubt, false.
-- NEVER invent a price or a deposit. If the per-person price was not actually stated in the thread, leave per_person_price null and ready_to_invoice false. Do NOT fabricate a "$500 save-the-date" line — only include a deposit/amount the thread actually agreed.
+- NEVER invent a price or a deposit. If the per-person price was not actually stated in the thread, leave per_person_price null and ready_to_invoice false. Do NOT fabricate a "$500 save-the-date" amount — but when our staff or the customer DID state a fixed holding / save-the-date deposit in the thread (e.g. "a $500 deposit secures the date", "needs $500 save the date invoice"), put that number in flat_deposit_amount so a deposit-only invoice can be raised before the package is finalised. flat_deposit_amount is separate from per_person_price and is NOT an add_on.
+- STAFF INSTRUCTIONS: messages FROM our own mailbox (hello@tarte.com.au) that are notes to ourselves — a forward to hello@ with a line or two typed at the top ("needs $500 save the date invoice for hideout high tea 6th of december", "amend to 29 guests", "invoice at $89pp") — are direct instructions from our team about what to invoice. Treat them as authoritative and MORE RECENT than anything the customer wrote: take the amount / date / numbers / package they state, resolve the date, and do not list those fields as missing.
 - per_person_price is the BASE package price ONLY. Anything you list in add_ons must NOT also be folded into per_person_price — the invoice adds them as separate lines, so including them in both double-charges the customer (e.g. $89 package + $10 charcuterie + $22 steak means per_person_price 89, NOT 121).
 - add_ons are EXTRA CHARGEABLE ITEMS only (drinks package, grazing board, cake, styling, room hire). NEVER copy rows you see in a previously sent invoice or quote inside the thread — "Remaining balance", "Total", "Subtotal", "GST", "Deposit", "Save-the-date deposit", "Payment received", "Balance due" are invoice OUTPUTS, not add-ons. Echoing them multiplies the invoice into garbage. A deposit already paid is a PAYMENT, never an add_on line.
 - Use the MOST RECENT agreed value when something changes (e.g. 32 guests later revised to 30 → 30).
@@ -85,6 +94,7 @@ export async function extractInvoiceDetails(
   // Read the ENTIRE thread — final agreed numbers/dates often sit deep in a
   // long chain (Chris's rule).
   const body = renderFullThread(thread.messages)
+  const staffNotes = staffInstructionNotes(thread)
   const r = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 700,
@@ -94,6 +104,9 @@ export async function extractInvoiceDetails(
         role: "user",
         content:
           `TODAY is ${todayWeekday} ${todayBrisbane} (Australia/Brisbane).\n\nThread:\n\n${body}` +
+          (staffNotes
+            ? `\n\nSTAFF INSTRUCTIONS — notes our own team wrote on this thread (forwarded to ourselves). These are authoritative about WHAT to invoice; take amounts, dates, numbers and package from them and do not mark those fields missing:\n${staffNotes}`
+            : "") +
           (extraContext
             ? `\n\nThe SAME customer also has these other email threads with us — agreed prices, dates, numbers and deposits may live here:\n${extraContext}`
             : ""),
@@ -103,6 +116,35 @@ export async function extractInvoiceDetails(
   const block = r.content[0]
   if (!block || block.type !== "text") return empty()
   return parse(block.text)
+}
+
+/** Lines our own team typed at the top of a forward-to-self ("needs $500 save
+ *  the date invoice for hideout high tea 6th dec"). Georgia/Shawna's actual
+ *  workflow (2026-08-19): forward the thread to hello@ with the instruction on
+ *  top, then apply Make Invoice. Only messages FROM the mailbox that are also
+ *  addressed TO it (or to nobody external) count; customer-facing replies do
+ *  not. Text below the forwarded-message marker is dropped. */
+export function staffInstructionNotes(thread: ParsedThread): string {
+  const hello = config().HELLO_MAILBOX.toLowerCase()
+  const notes: string[] = []
+  for (const m of thread.messages) {
+    if (!m.from.toLowerCase().includes(hello)) continue
+    const rcpts = [...m.to, ...m.cc].map((r) => r.toLowerCase())
+    const external = rcpts.some((r) => !r.includes("@tarte.com.au"))
+    if (external) continue
+    let text = m.bodyText.replace(/\r/g, "")
+    const cut = text.search(/-{3,}\s*Forwarded message|^On .{5,120} wrote:$/m)
+    if (cut > 0) text = text.slice(0, cut)
+    text = text
+      .split("\n")
+      .filter((l) => !/^\s*(BOOK BEACH HOUSE|HIRE SUP|<https?:\/\/)/i.test(l))
+      .join("\n")
+      .trim()
+    if (text.length >= 4 && text.length <= 2000) {
+      notes.push(`[${m.date.toISOString().slice(0, 16).replace("T", " ")}] ${text}`)
+    }
+  }
+  return notes.join("\n\n")
 }
 
 function empty(): InvoiceExtraction {
@@ -121,6 +163,7 @@ function empty(): InvoiceExtraction {
     time_label: null,
     dietaries: null,
     deposit_pct: null,
+    flat_deposit_amount: null,
     add_ons: [],
     confidence: 0,
     missing: ["unparseable"],
@@ -146,10 +189,15 @@ function parse(text: string): InvoiceExtraction {
       venue_space: typeof o.venue_space === "string" ? o.venue_space : null,
       per_person_price: typeof o.per_person_price === "number" ? o.per_person_price : null,
       guests: typeof o.guests === "number" ? o.guests : null,
-      event_date: typeof o.event_date === "string" ? o.event_date : null,
+      // Tolerate a model that returns "6 December 2026" — normalise or drop.
+      event_date: normaliseEventDate(o.event_date) ?? null,
       time_label: typeof o.time_label === "string" ? o.time_label : null,
       dietaries: typeof o.dietaries === "string" ? o.dietaries : null,
       deposit_pct: typeof o.deposit_pct === "number" ? o.deposit_pct : null,
+      flat_deposit_amount:
+        typeof o.flat_deposit_amount === "number" && o.flat_deposit_amount > 0
+          ? Math.round(o.flat_deposit_amount * 100) / 100
+          : null,
       add_ons: Array.isArray(o.add_ons)
         ? o.add_ons
             .filter((a): a is { description: string; unit_price: number; per_person: boolean } =>
@@ -183,8 +231,16 @@ function fmtDue(eventDate: string, daysBefore: number): string {
 export function manuallyInvoiceable(x: InvoiceExtraction): boolean {
   const hasMoney =
     (x.per_person_price != null && x.per_person_price > 0 && x.guests != null && x.guests > 0) ||
-    x.add_ons.some((a) => a.unit_price > 0)
-  return Boolean(x.customer_email && x.event_date && hasMoney)
+    x.add_ons.some((a) => a.unit_price > 0) ||
+    isSaveTheDate(x)
+  return Boolean(x.customer_email && isIsoDate(x.event_date) && hasMoney)
+}
+
+/** A deposit-only "save the date" invoice: staff/thread named a fixed holding
+ *  deposit and the package (per-person price × guests) isn't locked yet. */
+export function isSaveTheDate(x: InvoiceExtraction): boolean {
+  const hasPackage = x.per_person_price != null && x.per_person_price > 0 && x.guests != null && x.guests > 0
+  return !hasPackage && typeof x.flat_deposit_amount === "number" && x.flat_deposit_amount > 0
 }
 
 /** True only when there's genuinely enough to invoice — and ONLY for a
@@ -226,6 +282,15 @@ export function lineItemsFromExtraction(x: InvoiceExtraction): LineItem[] {
       description: x.package_name ?? `High Tea${x.venue_space ? ` - ${x.venue_space}` : ""}`,
       qty: x.guests,
       unitPrice: x.per_person_price,
+    })
+  } else if (isSaveTheDate(x)) {
+    // Deposit-only invoice raised before the package is finalised. One line,
+    // full amount due now; it comes off the final balance later.
+    const what = x.package_name ?? `${x.venue_space ?? "Private"} function`
+    lineItems.push({
+      description: `Save-the-date deposit — ${what}`,
+      qty: 1,
+      unitPrice: x.flat_deposit_amount!,
     })
   }
   for (const a of x.add_ons) {
@@ -275,7 +340,9 @@ export async function buildInvoiceFromExtraction(
   // weeks prior" when the event is tomorrow).
   const todayB = opts.todayBrisbane
   const dueLabelIfFuture = (daysBefore: number): string | undefined => {
-    if (!x.event_date) return undefined
+    // A malformed date must never take the whole build down (it 500'd the
+    // /invoice/new form on 2026-08-19); just print no due line.
+    if (!isIsoDate(x.event_date)) return undefined
     const due = new Date(Date.UTC(
       Number(x.event_date.slice(0, 4)),
       Number(x.event_date.slice(5, 7)) - 1,
@@ -303,6 +370,13 @@ export async function buildInvoiceFromExtraction(
     "Paid in full — thank you. Nothing owing.",
     "Final numbers and dietaries required 2 days prior to the event.",
   ]
+  const saveTheDate = kind === "standard" && isSaveTheDate(x)
+  const saveTheDateNotes = [
+    "This save-the-date deposit holds your date and is applied toward your final balance.",
+    "Once your package and guest numbers are confirmed, a further invoice follows per our booking conditions.",
+    "Final numbers and dietaries required 2 days prior to the event.",
+    "Dietary requirements may incur an additional fee.",
+  ]
   const gen = await generateInvoice({
     bookingId: opts.bookingId,
     threadId: opts.threadId,
@@ -318,14 +392,26 @@ export async function buildInvoiceFromExtraction(
     },
     lineItems,
     kind,
-    depositPct: kind === "balance" || fullyPaid ? null : depositPct,
+    depositPct: kind === "balance" || fullyPaid || saveTheDate ? null : depositPct,
     depositPaidAmount: kind === "balance" ? amountPaid ?? depositPaid : null,
     amountPaid,
     todayBrisbane: opts.todayBrisbane,
     depositDueLabel:
-      kind === "balance" || depositPct === null || fullyPaid ? undefined : dueLabelIfFuture(14),
-    totalDueLabel: fullyPaid ? undefined : dueLabelIfFuture(2),
-    notes: fullyPaid ? paidNotes : kind === "balance" ? balanceNotes : isTableBooking ? tableNotes : undefined,
+      kind === "balance" || depositPct === null || fullyPaid || saveTheDate ? undefined : dueLabelIfFuture(14),
+    totalDueLabel: fullyPaid
+      ? undefined
+      : saveTheDate
+        ? "On receipt — payment secures your date"
+        : dueLabelIfFuture(2),
+    notes: fullyPaid
+      ? paidNotes
+      : kind === "balance"
+        ? balanceNotes
+        : saveTheDate
+          ? saveTheDateNotes
+          : isTableBooking
+            ? tableNotes
+            : undefined,
   })
   // Persist the editable detail so staff can tweak a field and regenerate.
   await db()

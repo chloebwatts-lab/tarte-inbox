@@ -16,6 +16,7 @@ import {
   archiveThread,
   deleteDraft,
   deleteThreadDrafts,
+  deleteOurNoteDrafts,
   getThreadDraftBody,
   createInThreadDraft,
   createStandaloneDraft,
@@ -59,6 +60,8 @@ import {
   extractInvoiceDetails,
   invoiceableNow,
   manuallyInvoiceable,
+  lineItemsFromExtraction,
+  isSaveTheDate,
   buildInvoiceFromExtraction,
   type InvoiceExtraction,
 } from "./invoice/from-thread.js"
@@ -74,6 +77,7 @@ import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
 import { dequote } from "./lib/dequote.js"
 import { renderFullThread } from "./lib/thread-text.js"
+import { normaliseEventDate } from "./lib/dates.js"
 import { maybeAllergenBlock } from "./tk/allergens.js"
 import {
   getThread as getThreadRow,
@@ -641,18 +645,41 @@ export async function queueForward(
  * Deleted (trashed) threads are the exception: staff dismissed them, back off.
  */
 export async function reassertDraftUnread(): Promise<number> {
-  const { rows } = await db().query<{ thread_id: string }>(
-    `SELECT thread_id FROM inbox_threads
-      WHERE state IN ('drafted','form_drafted')
+  // Belt and braces: match on last_action too, so a thread whose state was
+  // ever clobbered (the pre-2026-08-19 upsert bug) still gets swept as long as
+  // our draft is the last thing we did on it.
+  const { rows } = await db().query<{ thread_id: string; drafted_at: string | null }>(
+    `SELECT thread_id, meta->>'draftedAt' AS drafted_at FROM inbox_threads
+      WHERE (state IN ('drafted','form_drafted')
+             OR (last_action = 'drafted' AND state NOT IN ('sent_by_human','auto_sent','dismissed_by_staff','handled_manual')))
         AND last_processed_at > now() - interval '21 days'
-      ORDER BY last_processed_at DESC LIMIT 100`
+      ORDER BY last_processed_at DESC LIMIT 150`
   )
   let fixed = 0
+  let replied = 0
   for (const r of rows) {
     try {
       const s = await threadDraftReadState(r.thread_id)
       if (s.trashed) {
         await dismissTrashedThread(r.thread_id)
+        continue
+      }
+      // A human has replied since we drafted (our SENT message is newest and
+      // postdates the draft) — the girls are done with it. Never re-mark it
+      // unread, even if a superseded draft is still hanging off the thread;
+      // record the send so nothing else nags either. (A nudge draft sits
+      // AFTER our last sent message, so it still gets swept normally.)
+      const draftedAt = r.drafted_at ? new Date(r.drafted_at).getTime() : 0
+      const sentAfterDraft =
+        s.repliedByUs && (!s.latestRealAt || !draftedAt || s.latestRealAt.getTime() > draftedAt)
+      if (sentAfterDraft) {
+        await db().query(
+          `UPDATE inbox_threads SET state = 'sent_by_human', last_action = 'captured_edit'
+            WHERE thread_id = $1 AND state IN ('drafted','form_drafted','classified')`,
+          [r.thread_id]
+        )
+        await removeLabel(r.thread_id, ACTION_LABEL).catch(() => {})
+        replied++
         continue
       }
       if (s.hasDraft && !s.unread) {
@@ -663,7 +690,8 @@ export async function reassertDraftUnread(): Promise<number> {
       /* thread gone — ignore */
     }
   }
-  if (fixed) console.log(`[unread] re-marked ${fixed} drafted thread(s) unread`)
+  if (fixed || replied)
+    console.log(`[unread] re-marked ${fixed} drafted thread(s) unread; ${replied} already replied by staff (left alone)`)
   return fixed
 }
 
@@ -1961,6 +1989,8 @@ export interface InvoiceEdits {
   amount_paid?: number
   // Shortcut: set amount_paid to the recalculated invoice total.
   paid_in_full?: boolean
+  // Fixed save-the-date deposit for a deposit-only invoice (0 clears it).
+  flat_deposit_amount?: number
   // When provided, REPLACES the stored extras wholesale — the form submits the
   // full desired list, so staff can change, remove, or add lines freely.
   add_ons?: Array<{ description: string; unit_price: number; per_person: boolean }>
@@ -2020,12 +2050,27 @@ export async function createManualInvoice(fields: {
   per_person_price?: number
   deposit_pct?: number
   dietaries?: string
+  // Fixed save-the-date / holding deposit (e.g. 500) when the package isn't
+  // locked yet. Either this OR guests + price per person is required.
+  flat_deposit_amount?: number
 }): Promise<{ ok: true; invoiceNumber: string } | { ok: false; error: string }> {
   if (!invoiceConfigReady()) return { ok: false, error: "invoice config not set" }
   if (!fields.customer_name || !fields.customer_email)
     return { ok: false, error: "customer name and email are required" }
-  const hasMoney = (fields.per_person_price ?? 0) > 0 && (fields.guests ?? 0) > 0
-  if (!hasMoney) return { ok: false, error: "guests and price per person are required" }
+  const hasPackage = (fields.per_person_price ?? 0) > 0 && (fields.guests ?? 0) > 0
+  const flatDeposit = (fields.flat_deposit_amount ?? 0) > 0 ? fields.flat_deposit_amount! : null
+  if (!hasPackage && !flatDeposit)
+    return { ok: false, error: "enter guests + price per person, or a save-the-date deposit amount" }
+  // Staff type dates every which way ("6/12/2026", "6th December"); the
+  // builder needs YYYY-MM-DD and used to crash on anything else.
+  const today = todayBrisbaneStr()
+  let eventDate: string | null = null
+  if (fields.event_date) {
+    eventDate = normaliseEventDate(fields.event_date, today)
+    if (!eventDate)
+      return { ok: false, error: `couldn't read the date "${fields.event_date}". Use the date picker or type it like 6/12/2026.` }
+    if (eventDate < today) return { ok: false, error: `the event date ${eventDate} is in the past` }
+  }
 
   const x: InvoiceExtraction = {
     booking_type: "private_hire",
@@ -2036,34 +2081,51 @@ export async function createManualInvoice(fields: {
     event_type: fields.event_type ?? null,
     package_name: fields.package_name ?? null,
     venue_space: fields.venue_space ?? null,
-    per_person_price: fields.per_person_price ?? null,
-    guests: fields.guests ?? null,
-    event_date: fields.event_date ?? null,
+    per_person_price: hasPackage ? fields.per_person_price! : null,
+    guests: hasPackage ? fields.guests! : null,
+    event_date: eventDate,
     time_label: fields.time_label ?? null,
     dietaries: fields.dietaries ?? null,
     deposit_pct: fields.deposit_pct ?? 50,
+    flat_deposit_amount: hasPackage ? null : flatDeposit,
     add_ons: [],
     confidence: 1,
     missing: [],
   }
-  const today = todayBrisbaneStr()
   const built = await buildInvoiceFromExtraction(x, {
     bookingId: null,
     threadId: "",
     todayBrisbane: today,
     kind: "standard",
   })
-  const deposit = Math.round(((fields.per_person_price! * fields.guests! * (fields.deposit_pct ?? 50)) / 100) * 100) / 100
   const firstNameOnly = fields.customer_name.split(/\s+/)[0]
-  const body =
-    `Hi ${firstNameOnly},\n\n` +
-    `Thank you for booking with us${fields.event_date ? ` for ${fields.event_date}` : ""} — please find your deposit invoice attached. ` +
-    `Paying the ${fields.deposit_pct ?? 50}% deposit ($${deposit.toFixed(2)}) secures your date, and final numbers and dietaries can be confirmed closer to the day.\n\n` +
-    `Kind Regards,\nTarte Management`
+  const niceDate = eventDate
+    ? new Date(`${eventDate}T00:00:00+10:00`).toLocaleDateString("en-AU", {
+        timeZone: "Australia/Brisbane",
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      })
+    : null
+  let body: string
+  if (hasPackage) {
+    const deposit = Math.round(((fields.per_person_price! * fields.guests! * (fields.deposit_pct ?? 50)) / 100) * 100) / 100
+    body =
+      `Hi ${firstNameOnly},\n\n` +
+      `Thank you for booking with us${niceDate ? ` for ${niceDate}` : ""}, please find your deposit invoice attached. ` +
+      `Paying the ${fields.deposit_pct ?? 50}% deposit ($${deposit.toFixed(2)}) secures your date, and final numbers and dietaries can be confirmed closer to the day.\n\n` +
+      `Kind Regards,\nTarte Management`
+  } else {
+    body =
+      `Hi ${firstNameOnly},\n\n` +
+      `Thank you for booking with us${niceDate ? ` for ${niceDate}` : ""}, please find your save-the-date deposit invoice attached. ` +
+      `Paying the $${flatDeposit!.toFixed(2)} deposit secures your date, and it comes off your final balance once your package and numbers are confirmed.\n\n` +
+      `Kind Regards,\nTarte Management`
+  }
   const safeName = fields.customer_name.replace(/[^A-Za-z0-9 ]/g, "").trim()
   const { threadId } = await createStandaloneDraftWithThread(
     fields.customer_email,
-    `Your booking with Tarte${invoiceSubjectSuffix(fields.event_date, built.invoiceNumber)}`,
+    `Your booking with Tarte${invoiceSubjectSuffix(eventDate, built.invoiceNumber)}`,
     body,
     config().HELLO_MAILBOX,
     "Tarte Team",
@@ -2134,13 +2196,17 @@ export async function regenerateInvoiceFromEdits(
     dietaries: edits.dietaries ?? base.dietaries,
     deposit_pct: edits.deposit_pct ?? base.deposit_pct,
     amount_paid: edits.amount_paid ?? base.amount_paid,
+    flat_deposit_amount: edits.flat_deposit_amount ?? base.flat_deposit_amount ?? null,
     add_ons: edits.add_ons ?? base.add_ons,
   }
+  if (x.event_date) {
+    const norm = normaliseEventDate(x.event_date)
+    if (!norm) return { ok: false, error: `couldn't read the date "${x.event_date}". Type it like 6/12/2026.` }
+    x.event_date = norm
+  }
   if (edits.paid_in_full) {
-    const gross = x.add_ons.reduce(
-      (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
-      (x.per_person_price ?? 0) * (x.guests ?? 0)
-    )
+    // Same line derivation the PDF uses (package, or save-the-date, + extras).
+    const gross = lineItemsFromExtraction(x).reduce((s, li) => s + li.qty * li.unitPrice, 0)
     x.amount_paid = Math.round(gross * 100) / 100
   }
 
@@ -2303,11 +2369,9 @@ async function composeAndDeliverInvoice(
     threadId: thread.threadId,
     todayBrisbane: today,
   })
-  const total = x.add_ons.reduce(
-    (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
-    (x.per_person_price ?? 0) * (x.guests ?? 0)
-  )
-  const deposit = Math.round((total * (x.deposit_pct ?? 50)) / 100 * 100) / 100
+  const total = lineItemsFromExtraction(x).reduce((s, li) => s + li.qty * li.unitPrice, 0)
+  const saveTheDate = isSaveTheDate(x)
+  const deposit = saveTheDate ? total : Math.round((total * (x.deposit_pct ?? 50)) / 100 * 100) / 100
   const playbook = await getPlaybook(category)
   const dateLabel = x.event_date
     ? new Date(`${x.event_date}T00:00:00+10:00`).toLocaleDateString("en-AU", {
@@ -2325,11 +2389,15 @@ async function composeAndDeliverInvoice(
     customExtras: [
       {
         role: "user",
-        content:
-          `The booking is now CONFIRMED and the deposit invoice (${built.invoiceNumber}) is ATTACHED to this email as a PDF.\n` +
-          `Date: ${dateLabel}; Time: ${x.time_label ?? "as agreed"}; Guests: ${x.guests ?? "?"}; Package: ${[x.package_name, x.venue_space].filter(Boolean).join(" in ")}.\n` +
-          `Deposit to pay now: ${x.deposit_pct ?? 50}% = $${deposit.toFixed(2)}.\n` +
-          `Drafting rule: warm, short reply. Thank them for confirming the details, say their deposit invoice is attached and paying the deposit secures the date, and that final numbers/dietaries can be confirmed closer to the day. Don't re-list every line. Keep it to a few sentences.`,
+        content: saveTheDate
+          ? `We are holding their date and the SAVE-THE-DATE deposit invoice (${built.invoiceNumber}) is ATTACHED to this email as a PDF.\n` +
+            `Date: ${dateLabel}; Time: ${x.time_label ?? "to be confirmed"}; Space: ${[x.package_name, x.venue_space].filter(Boolean).join(" in ") || "private function"}.\n` +
+            `Save-the-date deposit to pay now: $${deposit.toFixed(2)} (a fixed holding deposit; it comes off their final balance once package and numbers are confirmed).\n` +
+            `Drafting rule: warm, short reply. Say the invoice is attached, paying it secures the date, and once they've settled on package and guest numbers we'll send the full details. Do NOT quote a per-person price or guest count (none agreed yet). A few sentences.`
+          : `The booking is now CONFIRMED and the deposit invoice (${built.invoiceNumber}) is ATTACHED to this email as a PDF.\n` +
+            `Date: ${dateLabel}; Time: ${x.time_label ?? "as agreed"}; Guests: ${x.guests ?? "?"}; Package: ${[x.package_name, x.venue_space].filter(Boolean).join(" in ")}.\n` +
+            `Deposit to pay now: ${x.deposit_pct ?? 50}% = $${deposit.toFixed(2)}.\n` +
+            `Drafting rule: warm, short reply. Thank them for confirming the details, say their deposit invoice is attached and paying the deposit secures the date, and that final numbers/dietaries can be confirmed closer to the day. Don't re-list every line. Keep it to a few sentences.`,
       },
     ],
   })
@@ -2349,8 +2417,78 @@ async function composeAndDeliverInvoice(
       },
     ],
   })
-  console.log(`[invoice] built ${built.invoiceNumber} for thread ${thread.threadId} (${x.guests}pax, $${total})`)
+  console.log(`[invoice] built ${built.invoiceNumber} for thread ${thread.threadId} (${saveTheDate ? "save-the-date" : `${x.guests}pax`}, $${total})`)
   return true
+}
+
+/**
+ * The Make-Invoice / Update-Invoice label couldn't produce a correct invoice.
+ * Before 2026-08-19 this only wrote a note into the DB and dropped the label,
+ * so in Gmail it looked like the label simply vanished and nothing happened
+ * (Georgia re-applied it three times on one thread, then went to /invoice/new).
+ * Now: leave a visible internal NOTE DRAFT in the thread (addressed to hello@,
+ * never to the customer) saying exactly what's missing and how to fix it, mark
+ * the thread unread, flag Action needed. The note is swept away automatically
+ * the moment a real invoice draft is created (deliver() clears thread drafts).
+ */
+async function flagInvoiceUnmet(
+  thread: ParsedThread,
+  x: InvoiceExtraction,
+  mode: "build" | "update"
+): Promise<void> {
+  const id = thread.threadId
+  const helloMail = config().HELLO_MAILBOX
+  const missing = x.missing.length ? x.missing.join(", ") : "price / date / guest numbers"
+  const base = config().PUBLIC_BASE_URL.replace(/\/$/, "")
+  const token = config().INVOICE_PORTAL_TOKEN
+  const newLink = token ? `${base}/invoice/new?k=${encodeURIComponent(token)}` : `${base}/invoice/new`
+  const body =
+    `[Tarte Inbox note: internal, not for the customer]\n\n` +
+    (mode === "build"
+      ? `I couldn't build an invoice for this thread yet. Still missing: ${missing}.\n\n`
+      : `I couldn't update the invoice on this thread. The new details aren't clear yet: ${missing}.\n\n`) +
+    `To fix it, forward this thread to ${helloMail} with the details typed at the top, for example:\n` +
+    `  "$500 save the date invoice, Hideout high tea, 6 Dec"\n` +
+    `  "29 guests at $89pp, Sat 22 Aug 11am-2pm, private high tea in the Hideout"\n` +
+    `then apply the Make Invoice label again.\n\n` +
+    `Or make it by hand here: ${newLink}\n\n` +
+    `This note disappears on its own once the invoice is built.`
+  const tail = thread.messages[thread.messages.length - 1]!
+  try {
+    // Supersede any earlier note so they don't pile up.
+    await deleteOurNoteDrafts(id)
+    await createInThreadDraft(
+      {
+        threadId: id,
+        to: helloMail,
+        subject: tail.subject.startsWith("Re:") ? tail.subject : `Re: ${tail.subject}`,
+        inReplyTo: tail.messageIdHeader ?? "",
+        references: tail.references ?? tail.messageIdHeader ?? "",
+      },
+      body,
+      helloMail,
+      "Tarte Inbox"
+    )
+  } catch (e) {
+    console.warn(`[invoice] could not leave unmet note on ${id}:`, e instanceof Error ? e.message : e)
+  }
+  await applyLabel(id, ACTION_LABEL).catch(() => {})
+  await markThreadUnread(id).catch(() => {})
+  await upsertThread({
+    thread_id: id,
+    last_message_id: tail.id,
+    state: "classified",
+    last_action: "labeled",
+    meta: {
+      [mode === "build" ? "invoiceRequestUnmet" : "invoiceUpdateUnmet"]: true,
+      missing: x.missing,
+      note:
+        mode === "build"
+          ? "Make-Invoice requested but couldn't auto-build: missing price/date/numbers. Add the details to the thread (forward to hello@ with a note on top) and re-apply the label, or invoice manually."
+          : "Invoice update requested but the new details aren't clear in the thread. State the change (e.g. new guest count) in the thread, then re-apply the label.",
+    },
+  })
+  console.warn(`[invoice] ${mode} on ${id} unmet — missing: ${x.missing.join(", ")}`)
 }
 
 // --- on-demand invoicing via the "Make Invoice" Gmail label ---
@@ -2405,21 +2543,9 @@ export async function runInvoiceRequests(): Promise<{ processed: number }> {
       if (manuallyInvoiceable(x)) {
         await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
       } else {
-        // Not enough to build a correct invoice — flag what's missing instead
-        // of guessing.
-        await applyLabel(id, ACTION_LABEL).catch(() => {})
-        await upsertThread({
-          thread_id: id,
-          last_message_id: thread.messages[thread.messages.length - 1]!.id,
-          state: "classified",
-          last_action: "labeled",
-          meta: {
-            invoiceRequestUnmet: true,
-            missing: x.missing,
-            note: "Make-Invoice requested but couldn't auto-build — missing price/date/numbers. Add the details to the thread and re-apply the label, or invoice manually.",
-          },
-        })
-        console.warn(`[invoice] make-invoice on ${id} unmet — missing: ${x.missing.join(", ")}`)
+        // Not enough to build a correct invoice — say so IN the thread instead
+        // of guessing (or silently dropping the label).
+        await flagInvoiceUnmet(thread, x, "build")
       }
       await removeLabel(id, MAKE_INVOICE_LABEL).catch(() => {})
       processed++
@@ -2497,37 +2623,13 @@ export async function processInvoiceRebuild(
       await composeAndDeliverInvoice(thread, customerMsg, category, x, today)
       return "built"
     }
-    await applyLabel(id, ACTION_LABEL).catch(() => {})
-    await upsertThread({
-      thread_id: id,
-      last_message_id: thread.messages[thread.messages.length - 1]!.id,
-      state: "classified",
-      last_action: "labeled",
-      meta: {
-        invoiceUpdateUnmet: true,
-        missing: x.missing,
-        note: "Invoice requested but couldn't auto-build — add the missing details (price, date, numbers) to the thread and re-apply the label.",
-      },
-    })
-    console.warn(`[invoice] build on ${id} unmet — missing: ${x.missing.join(", ")}`)
+    await flagInvoiceUnmet(thread, x, "build")
     return "unmet"
   }
 
   // Need usable numbers to rebuild a correct invoice.
   if (!manuallyInvoiceable(x)) {
-    await applyLabel(id, ACTION_LABEL).catch(() => {})
-    await upsertThread({
-      thread_id: id,
-      last_message_id: thread.messages[thread.messages.length - 1]!.id,
-      state: "classified",
-      last_action: "labeled",
-      meta: {
-        invoiceUpdateUnmet: true,
-        missing: x.missing,
-        note: "Invoice update requested but the new details aren't clear in the thread. State the change (e.g. new guest count) in the thread, then re-apply the label.",
-      },
-    })
-    console.warn(`[invoice] update on ${id} unmet — missing: ${x.missing.join(", ")}`)
+    await flagInvoiceUnmet(thread, x, "update")
     return "unmet"
   }
 
@@ -2549,10 +2651,7 @@ export async function processInvoiceRebuild(
   if (!attach) return "empty"
 
   const playbook = await getPlaybook(category)
-  const total = x.add_ons.reduce(
-    (s, a) => s + a.unit_price * (a.per_person && x.guests ? x.guests : 1),
-    (x.per_person_price ?? 0) * (x.guests ?? 0)
-  )
+  const total = lineItemsFromExtraction(x).reduce((s, li) => s + li.qty * li.unitPrice, 0)
   // A staffer may have already written or hand-edited the reply — the label
   // means "fix the invoice", not "rewrite my email". Keep their words and just
   // swap the attachment; only compose fresh text when no draft is pending.

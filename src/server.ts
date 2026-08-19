@@ -310,7 +310,7 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
  ${field("Customer name", "customer_name", x["customer_name"])}
  ${field("Customer email", "customer_email", x["customer_email"])}
  ${field("Event type", "event_type", x["event_type"])}
- ${field("Date (YYYY-MM-DD)", "event_date", x["event_date"])}
+ ${field("Event date", "event_date", x["event_date"], /^\d{4}-\d{2}-\d{2}$/.test(String(x["event_date"] ?? "")) ? "date" : "text")}
  ${field("Time", "time_label", x["time_label"])}
  ${field("Dietaries", "dietaries", x["dietaries"])}
  ${field("Deposit % (table bookings never show a deposit)", "deposit_pct", x["deposit_pct"], "number")}
@@ -323,6 +323,7 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
    <label style="flex:1;margin:0">Guests<input type="number" step="1" name="guests" value="${esc(x["guests"])}"></label>
    <label style="flex:1;margin:0">Price per person ($)<input type="number" step="any" name="per_person_price" value="${esc(x["per_person_price"])}"></label>
  </div>
+ ${field("Save-the-date deposit ($) — used only while guests/price above are blank; 0 clears it", "flat_deposit_amount", x["flat_deposit_amount"], "number")}
  <h2>Extra lines</h2>
  ${addOns.map((a, i) => extraRow(i, a, false)).join("") || `<div class="note">No extras on this invoice.</div>`}
  ${extraRow("new1", {}, true)}
@@ -394,7 +395,7 @@ function newInvoiceForm(msg?: string): string {
 <title>New invoice</title>
 <style>
  body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#3a3a3a}
- h1{font-size:18px;color:#6e8d85}
+ h1{font-size:18px;color:#6e8d85} h2{font-size:14px;color:#6e8d85;margin:20px 0 4px}
  label{display:block;margin:10px 0;font-size:13px;color:#6e8d85}
  input{display:block;width:100%;box-sizing:border-box;padding:8px;margin-top:3px;font-size:15px;border:1px solid #d9e2df;border-radius:6px;color:#3a3a3a}
  button{margin-top:16px;background:#6e8d85;color:#fff;border:0;border-radius:6px;padding:11px 18px;font-size:15px;cursor:pointer}
@@ -411,15 +412,18 @@ ${msg ? `<div class="msg">${msg}</div>` : ""}
  ${field("Event type", "event_type", "text", "e.g. Baby Shower")}
  ${field("Package", "package_name", "text", "e.g. Private High Tea in The Hideout")}
  ${field("Venue space", "venue_space", "text", "The Hideout / Tea Garden / Beach House")}
- ${field("Date (YYYY-MM-DD)", "event_date")}
+ ${field("Event date", "event_date", "date")}
  ${field("Time", "time_label", "text", "e.g. 11:00am - 2:00pm")}
- ${field("Guests *", "guests", "number")}
- ${field("Price per person ($) *", "per_person_price", "number")}
+ <h2>Either: package invoice (50% deposit)</h2>
+ ${field("Guests", "guests", "number")}
+ ${field("Price per person ($)", "per_person_price", "number")}
  ${field("Deposit % (default 50)", "deposit_pct", "number")}
+ <h2>Or: save-the-date deposit only</h2>
+ ${field("Save-the-date deposit ($)", "flat_deposit_amount", "number", "e.g. 500 (leave blank for a package invoice)")}
  ${field("Dietaries", "dietaries")}
  <button type="submit">Create invoice &amp; draft email</button>
 </form>
-<div class="note">Creates the branded PDF and a draft email to the customer with it attached (BCC accounts &amp; Shawna). It does not send — review and send from Gmail Drafts. Don't double-submit: each submit makes a new invoice number.</div>`
+<div class="note">Creates the branded PDF and a draft email to the customer with it attached (BCC accounts &amp; Shawna). It does not send: review and send from Gmail Drafts. Don't double-submit: each submit makes a new invoice number.<br><br>Tip: from a Gmail thread you can instead forward it to hello@ with the details typed at the top (e.g. "$500 save the date, Hideout high tea, 6 Dec") and apply the <b>Tarte / Make Invoice</b> label. The invoice then drafts in that thread.</div>`
 }
 
 app.get("/invoice/new", async (c) => {
@@ -441,22 +445,31 @@ app.post("/invoice/new", async (c) => {
     const v = Number(s)
     return Number.isFinite(v) ? v : undefined
   }
-  const result = await createManualInvoice({
-    customer_name: str("customer_name") ?? "",
-    customer_email: str("customer_email") ?? "",
-    event_type: str("event_type"),
-    package_name: str("package_name"),
-    venue_space: str("venue_space"),
-    event_date: str("event_date"),
-    time_label: str("time_label"),
-    guests: num("guests"),
-    per_person_price: num("per_person_price"),
-    deposit_pct: num("deposit_pct"),
-    dietaries: str("dietaries"),
-  })
-  const msg = result.ok
-    ? `✅ Created <b>${esc(result.invoiceNumber)}</b> — the draft email (PDF attached) is in Gmail Drafts, ready to review and send.`
-    : `⚠️ ${esc(result.error)}`
+  let msg: string
+  try {
+    const result = await createManualInvoice({
+      customer_name: str("customer_name") ?? "",
+      customer_email: str("customer_email") ?? "",
+      event_type: str("event_type"),
+      package_name: str("package_name"),
+      venue_space: str("venue_space"),
+      event_date: str("event_date"),
+      time_label: str("time_label"),
+      guests: num("guests"),
+      per_person_price: num("per_person_price"),
+      deposit_pct: num("deposit_pct"),
+      dietaries: str("dietaries"),
+      flat_deposit_amount: num("flat_deposit_amount"),
+    })
+    msg = result.ok
+      ? `✅ Created <b>${esc(result.invoiceNumber)}</b>: the draft email (PDF attached) is in Gmail Drafts, ready to review and send.`
+      : `⚠️ Not created: ${esc(result.error)}`
+  } catch (e) {
+    // Never 500 the girls: whatever broke, say so on the form. Nothing was
+    // created when we land here (numbers are reserved after validation).
+    console.error("[invoice] /invoice/new failed:", e instanceof Error ? e.stack ?? e.message : e)
+    msg = `⚠️ Something went wrong and the invoice was NOT created: ${esc(e instanceof Error ? e.message : String(e))}. Check the date and amounts and try again, or message Chloe/Claude.`
+  }
   return c.html(newInvoiceForm(msg))
 })
 
@@ -515,6 +528,7 @@ app.post("/invoice/edit", async (c) => {
     deposit_pct: num("deposit_pct"),
     amount_paid: num("amount_paid"),
     paid_in_full: form["paid_full"] !== undefined,
+    flat_deposit_amount: num("flat_deposit_amount"),
     add_ons: addOns,
   }
   let msg: string
@@ -529,9 +543,17 @@ app.post("/invoice/edit", async (c) => {
       const e2 = (rec2?.editable ?? {}) as unknown as Record<string, unknown>
       const guests = Number(e2["guests"] ?? 0)
       const pp = Number(e2["per_person_price"] ?? 0)
+      const flat = Number(e2["flat_deposit_amount"] ?? 0)
       const extras = (Array.isArray(e2["add_ons"]) ? (e2["add_ons"] as AddOnRow[]) : [])
-      let total = guests * pp
-      const lines = [`${esc(String(e2["package_name"] ?? "Package"))}: ${guests} × $${pp} = $${(guests * pp).toFixed(2)}`]
+      const hasPackage = guests > 0 && pp > 0
+      let total = hasPackage ? guests * pp : flat > 0 ? flat : 0
+      const lines = [
+        hasPackage
+          ? `${esc(String(e2["package_name"] ?? "Package"))}: ${guests} × $${pp} = $${(guests * pp).toFixed(2)}`
+          : flat > 0
+            ? `Save-the-date deposit: $${flat.toFixed(2)}`
+            : `${esc(String(e2["package_name"] ?? "Package"))}: (no guests / price set)`,
+      ]
       for (const a of extras) {
         const qty = a.per_person !== false ? guests : 1
         const amt = qty * Number(a.unit_price ?? 0)
