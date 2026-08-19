@@ -657,6 +657,7 @@ export async function reassertDraftUnread(): Promise<number> {
   )
   let fixed = 0
   let replied = 0
+  let removed = 0
   for (const r of rows) {
     try {
       const s = await threadDraftReadState(r.thread_id)
@@ -685,13 +686,28 @@ export async function reassertDraftUnread(): Promise<number> {
       if (s.hasDraft && !s.unread) {
         await markThreadUnread(r.thread_id)
         fixed++
+      } else if (!s.hasDraft) {
+        // Our draft is gone but nothing was sent from this thread: a girl
+        // deleted the draft (handled by phone / NBI, or replied elsewhere).
+        // Same intent as trashing the thread: stop listing it as a pending
+        // draft (digest / queue) and drop the flag. Coverage audit still
+        // watches the thread independently if the customer is left hanging.
+        await db().query(
+          `UPDATE inbox_threads SET state = 'handled_manual', last_action = 'draft_removed_by_staff'
+            WHERE thread_id = $1 AND state IN ('drafted','form_drafted','classified')`,
+          [r.thread_id]
+        )
+        await removeLabel(r.thread_id, ACTION_LABEL).catch(() => {})
+        removed++
       }
     } catch {
       /* thread gone — ignore */
     }
   }
-  if (fixed || replied)
-    console.log(`[unread] re-marked ${fixed} drafted thread(s) unread; ${replied} already replied by staff (left alone)`)
+  if (fixed || replied || removed)
+    console.log(
+      `[unread] re-marked ${fixed} drafted thread(s) unread; ${replied} already replied by staff, ${removed} draft(s) removed by staff (left alone)`
+    )
   return fixed
 }
 
