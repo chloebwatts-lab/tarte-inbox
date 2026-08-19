@@ -288,7 +288,7 @@ export function lineItemsFromExtraction(x: InvoiceExtraction): LineItem[] {
     // full amount due now; it comes off the final balance later.
     const what = x.package_name ?? `${x.venue_space ?? "Private"} function`
     lineItems.push({
-      description: `Save-the-date deposit — ${what}`,
+      description: `Save-the-date deposit: ${what}`,
       qty: 1,
       unitPrice: x.flat_deposit_amount!,
     })
@@ -401,7 +401,7 @@ export async function buildInvoiceFromExtraction(
     totalDueLabel: fullyPaid
       ? undefined
       : saveTheDate
-        ? "On receipt — payment secures your date"
+        ? "On receipt, payment secures your date"
         : dueLabelIfFuture(2),
     notes: fullyPaid
       ? paidNotes
