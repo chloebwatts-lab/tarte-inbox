@@ -31,7 +31,8 @@ If you get stuck: what do you do before service, during service, after service, 
 
 **Could someone else do it?**
 
-- `M` Only me. Needs my call or my authority.
+- `M` Only me. My call or my authority, start to finish.
+- `S` Someone spots it, I handle it. They flag it, I see it through.
 - `T` I could teach someone in a few shifts.
 - `A` Anyone. It's a checklist.
 
@@ -84,6 +85,17 @@ The second letter is what most systems miss. Knowing someone hates rostering tel
 |---|---|---|
 | **L / O** | **PROTECT.** Their real job. | **TRADE.** Keep one or two as breathing room, hand the rest over as training. |
 | **D** | **FIX.** Cannot be handed over, so change how it is done. Template it, time box it, automate it. | **GIVE AWAY FIRST.** This is the supervisor list. |
+
+### The fifth bucket: `S`
+
+`S` does not belong in the grid, and that is the point of it. A job answered `S` is really two jobs welded together: **spotting it**, which anyone can do, and **handling it**, which needs the manager. Forcing it into `M` hides the half that could move today.
+
+So an `S` item splits:
+
+- The **spotting** half becomes a category on the ops board. Anyone on shift flags it, and nobody has to hold it in their head.
+- The **handling** half stays with the manager, and stays on their role description.
+
+Every `S` answer is therefore a direct instruction about what the board needs to cover. If someone answers `S` for something the board has no category for, that is a missing category.
 
 Sort the give-away box by hours per month, biggest first. You are not inventing supervisor jobs, you are collecting real work already being done by the wrong person at the wrong pay grade. The hours tell you whether there is enough for one role or two.
 
