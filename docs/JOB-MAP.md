@@ -1,40 +1,33 @@
 # The Job Map
 
-A format for Savannah, Georgia and the two new supervisors to say clearly what their job actually is, what they want more of, and what should move to someone else.
+For Savy, Georgia and anyone running an area. Three steps, about fifteen minutes, once a quarter.
 
-Internal only, never customer facing.
-
-## Two halves, two audiences
-
-Keep these apart. Round one overwhelmed people because both halves arrived on one page.
-
-- **Part A, the sheet.** Three steps, fifteen minutes. The only part you send them.
-- **Part B, the sorting.** The four piles, the handover card, the four stages, the cadence. Your work, not theirs. Do not send it. Knowing the vocabulary does not help anyone tag a line, it only makes the task look bigger than it is.
+**Part A is the only part they see. Part B is yours.**
 
 ---
 
-# PART A. The sheet they get
+# PART A. The sheet
 
-## Step 1. Write down what you do (10 min)
+## 1. Write down what you do
 
-Every task. One short line each. Don't organise it, don't rank it, don't be polite about it.
+Every task, one short line each. Don't organise it or rank it.
 
-If you get stuck: what do you do before service, during service, after service, once a week, once a month, and what do people interrupt you for.
+What you sent me is what you enjoy and what you want help with, not everything you do. The ordinary running of the place, the shift, the staff, the day itself, probably isn't on it. Put that in too.
 
-## Step 2. Two letters next to each line (5 min)
+## 2. Two letters per line
 
 **How does it feel?**
 
-- `L` Love it. Time disappears.
-- `O` Okay. Don't mind it either way.
-- `D` Drains me. I put it off.
+- `L` Love it
+- `O` Okay
+- `D` Drains me
 
 **Could someone else do it?**
 
-- `M` Only me. My call or my authority, start to finish.
-- `S` Someone spots it, I handle it. They flag it, I see it through.
-- `T` I could teach someone in a few shifts.
-- `A` Anyone. It's a checklist.
+- `M` Only me, start to finish
+- `S` Someone spots it, I handle it
+- `T` I could teach someone
+- `A` Anyone, it's a checklist
 
 ```
 Fortnightly roster            D T
@@ -42,13 +35,13 @@ Function site visits          L M
 Chasing supplier credits      D A
 ```
 
-> **Be honest in the D column.** That column is the whole point. If nothing gets a D, nothing changes.
+Be honest in the D column. If nothing gets a D, nothing changes.
 
-## Step 3. Finish three sentences (2 min)
+## 3. Three sentences
 
-- **More of:** what you'd do all day if you could.
-- **Off my plate first:** pick one, the worst one.
-- **I want to learn:** anything, it doesn't have to be work you already do.
+- More of:
+- Off my plate first:
+- I want to learn:
 
 ## The sheet
 
@@ -56,75 +49,59 @@ Chasing supplier credits      D A
 NAME:                          DATE:
 
 WHAT I DO                        FEEL    WHO
-                                 L O D   M T A
+                                 L O D   M S T A
  1.
  2.
  3.
-      (keep going, 25 to 40 lines is normal)
 
 More of:
 Off my plate first:
 I want to learn:
 ```
 
-Then: *give it back to me and I'll do the sorting.*
-
 ---
 
-# PART B. What you do with it (do not send this part)
+# PART B. The sorting (do not send this)
 
-## Why it works this way round
+## The piles
 
-Job descriptions written from a blank page are slow, vague, and out of date within a month. This does the opposite. People list the real work first, tag every line with two letters, and the description falls out of the tags.
-
-The second letter is what most systems miss. Knowing someone hates rostering tells you nothing on its own. Knowing it is `D` **and** `T` tells you it moves this month.
-
-## The four piles
-
-|  | **M** (only me) | **T / A** (teachable or anyone) |
+|  | **M** | **T / A** |
 |---|---|---|
-| **L / O** | **PROTECT.** Their real job. | **TRADE.** Keep one or two as breathing room, hand the rest over as training. |
-| **D** | **FIX.** Cannot be handed over, so change how it is done. Template it, time box it, automate it. | **GIVE AWAY FIRST.** This is the supervisor list. |
+| **L / O** | **Protect.** Their real job. | **Trade.** Keep one or two, hand the rest over as training. |
+| **D** | **Fix.** Can't move it, so change how it's done. | **Give away first.** The supervisor list. |
 
-### The fifth bucket: `S`
+Sort the give-away box by hours per month, biggest first.
 
-`S` does not belong in the grid, and that is the point of it. A job answered `S` is really two jobs welded together: **spotting it**, which anyone can do, and **handling it**, which needs the manager. Forcing it into `M` hides the half that could move today.
+**Role description** = Protect + Fix. **Development plan** = their three sentences.
 
-So an `S` item splits:
+## `S` splits in two
 
-- The **spotting** half becomes a category on the ops board. Anyone on shift flags it, and nobody has to hold it in their head.
-- The **handling** half stays with the manager, and stays on their role description.
+An `S` answer is two jobs: spotting it, which anyone can do, and handling it, which needs the manager. The spotting half becomes a category on the ops board. The handling half stays on their role description.
 
-Every `S` answer is therefore a direct instruction about what the board needs to cover. If someone answers `S` for something the board has no category for, that is a missing category.
+Every `S` answer names a category the board needs.
 
-Sort the give-away box by hours per month, biggest first. You are not inventing supervisor jobs, you are collecting real work already being done by the wrong person at the wrong pay grade. The hours tell you whether there is enough for one role or two.
+## The handover card
 
-**Role description** = the PROTECT pile + the FIX pile, in plain sentences. **Development plan** = their three sentences. Nothing else.
+Five lines, before a task moves:
 
-## Handing a task over: the five line card
-
-A task does not move until these are written down.
-
-1. **The task:**
-2. **Done looks like:**
-3. **When:**
-4. **You decide / you ask me:** be specific, with numbers.
-5. **Stage:** which rung below.
-
-Line 4 stops handovers going wrong. Line 5 stops delegating from meaning dumping.
+1. The task
+2. Done looks like
+3. When
+4. You decide / you ask me, with numbers
+5. Stage
 
 ## The four stages
 
 `1. Watch me` → `2. Do it with me` → `3. Do it, tell me after` → `4. It's yours`
 
-One stage a week, nothing skips. If a task slips back a stage twice it goes in the FIX pile: the process is the problem, not the person.
+One stage a week. Slips back twice, it goes in the Fix pile.
 
 ## Cadence
 
-- **Fortnightly** for the first month while supervisors settle. Fifteen minutes, only stage changes discussed.
-- **Quarterly** full redo.
-- **Standing rule:** nothing gets added to anyone's map without something coming off it.
+- Fortnightly for the first month, stage changes only
+- Quarterly full redo
+- Nothing gets added to a map without something coming off it
 
-## The limit of this whole exercise
+## The limit
 
-You cannot delegate noticing. You can only delegate a checklist. Any give-away item that depends on someone spotting a problem stays with the person who spots it until the standard is written down.
+You can't delegate noticing, only a checklist. Any give-away item that depends on somebody spotting a problem stays with the person who spots it until the standard is written down.
