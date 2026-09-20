@@ -3,18 +3,22 @@
 // category back into the playbooks table. Tunes the agent's voice without
 // touching voice_guidance (that's a separate manual decision).
 //
+// NOT side-effect free: a normal run REPLACES the `examples` on every playbook
+// that has candidates, and the drafter uses those examples on the next tick.
+// Since go-live most Sent replies started life as an agent draft, so a fresh
+// ingest largely feeds the agent its own wording back. Use --dry-run first and
+// get Chloe's OK before a real run.
+//
 // Run on the droplet:
-//   docker compose exec inbox node dist/scripts/ingest-sent.js --limit 200
+//   docker compose exec -T inbox node dist/scripts/ingest-sent.js --limit=500 --dry-run
+//
+// --dry-run reads Gmail, classifies and reports counts. It writes nothing.
 
 import { google } from "googleapis"
 import { ensureGoogleAuthed } from "../google/oauth.js"
 import { classify, type Category } from "../llm/classifier.js"
-import {
-  getPlaybook,
-  upsertPlaybook,
-  listPlaybooks,
-} from "../db/queries.js"
-import { migrate } from "../db/pool.js"
+import { listPlaybooks } from "../db/queries.js"
+import { db, migrate } from "../db/pool.js"
 
 const MAX_EXAMPLES_PER_CATEGORY = 3
 const DEFAULT_LIMIT = 200
@@ -213,10 +217,17 @@ function pickExamples(pairs: Pair[]): Array<{ incoming: string; reply: string }>
 }
 
 async function main(): Promise<void> {
-  const limitArg = process.argv.find((a) => a.startsWith("--limit="))
-  const limit = limitArg ? Number(limitArg.split("=")[1]) : DEFAULT_LIMIT
+  // Accept both --limit=500 and --limit 500 (the header used to show the
+  // second form, which was silently ignored).
+  const args = process.argv.slice(2)
+  const limitEq = args.find((a) => a.startsWith("--limit="))
+  const limitIdx = args.indexOf("--limit")
+  const limitRaw = limitEq ? limitEq.split("=")[1] : limitIdx >= 0 ? args[limitIdx + 1] : undefined
+  const limit = Number(limitRaw) > 0 ? Number(limitRaw) : DEFAULT_LIMIT
+  const dryRun = args.includes("--dry-run")
+  console.log(`[ingest] limit=${limit}${dryRun ? " (dry run, nothing will be written)" : ""}`)
 
-  await migrate()
+  if (!dryRun) await migrate()
 
   const pairs = await fetchSentPairs(limit)
   console.log(`[ingest] usable pairs: ${pairs.length}`)
@@ -224,6 +235,17 @@ async function main(): Promise<void> {
     console.log("[ingest] nothing to do")
     return
   }
+
+  // How many of these replies began as one of OUR drafts? (edit-capture writes
+  // an inbox_learnings row for every drafted thread a human then sent.)
+  const { rows: learned } = await db().query<{ thread_id: string }>(
+    `SELECT DISTINCT thread_id FROM inbox_learnings WHERE thread_id = ANY($1::text[])`,
+    [pairs.map((p) => p.threadId)]
+  )
+  const agentDrafted = new Set(learned.map((r) => r.thread_id))
+  console.log(
+    `[ingest] ${pairs.filter((p) => agentDrafted.has(p.threadId)).length} of ${pairs.length} usable pairs are replies that started as an agent draft`
+  )
 
   const grouped = await classifyAll(pairs)
   console.log("\n[ingest] examples per category:")
@@ -237,7 +259,22 @@ async function main(): Promise<void> {
     const candidates = grouped.get(cat)
     if (!candidates?.length) continue
     const examples = pickExamples(candidates)
-    await upsertPlaybook({ ...pb, examples })
+    if (dryRun) {
+      const picked = [...candidates]
+        .sort((a, b) => b.date.getTime() - a.date.getTime())
+        .slice(0, MAX_EXAMPLES_PER_CATEGORY)
+      console.log(
+        `[ingest] would replace ${pb.examples?.length ?? 0} example(s) on ${cat} with ${examples.length} ` +
+          `(${picked.filter((p) => agentDrafted.has(p.threadId)).length} of them agent-drafted replies)`
+      )
+      continue
+    }
+    // Touch ONLY the examples column. A whole-row upsert from this snapshot
+    // could undo a FAQ edit staff saved in the TK admin page mid-run.
+    await db().query(
+      `UPDATE inbox_playbooks SET examples = $2::jsonb, updated_at = now() WHERE category = $1`,
+      [cat, JSON.stringify(examples)]
+    )
     console.log(`[ingest] updated ${cat} with ${examples.length} examples`)
   }
 }
