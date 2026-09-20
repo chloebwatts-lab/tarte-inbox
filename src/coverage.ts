@@ -42,6 +42,25 @@ const OUR_SUBJECT = /^\[tarte inbox\]|^inbox digest |^(accepted|declined|tentati
 const UNANSWERED_ALERT_HOURS = 4 // the agent acts within minutes; hours = broken
 const STALE_DRAFT_HOURS = 48 // system did its part; humans haven't sent
 const MAX_LIST = 1000
+// Gmail allows a fixed number of quota units per user per minute and the whole
+// service shares it. The scan used to fire its thread reads back to back, hit
+// "Quota exceeded ... per minute per user" part way through every hourly run
+// and silently skip the rest (2026-09-20 logs: as few as 81 of 255 threads
+// scanned, and the email tick losing the odd minute to the same limit). A
+// sentinel that skips threads is blind exactly where it matters, so: pace the
+// reads, and when the quota does trip, wait for the window to clear and retry
+// instead of dropping the thread. The waits are capped per run so a genuinely
+// exhausted quota cannot keep one run alive into the next.
+const SCAN_PACE_MS = 150
+const QUOTA_WAIT_MS = 20_000
+const MAX_QUOTA_WAITS_PER_RUN = 9
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+function isQuotaError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return /quota exceeded|rate ?limit/i.test(msg)
+}
 
 // The "Missed" folder (Chloe, 2026-07-20): a visible Gmail folder holding every
 // customer email our side has NOT actually sent a reply to yet — so the girls
@@ -116,14 +135,28 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
   const unanswered: ThreadVerdict[] = []
   const staleDrafts: ThreadVerdict[] = []
   let scanned = 0
+  let quotaWaits = 0
+  const getMeta = async (id: string): Promise<gmail_v1.Schema$Thread> => {
+    for (;;) {
+      try {
+        const t = await g.users.threads.get({
+          userId: "me",
+          id,
+          format: "metadata",
+          metadataHeaders: ["From", "Subject", "Date"],
+        })
+        return t.data
+      } catch (e) {
+        if (!isQuotaError(e) || quotaWaits >= MAX_QUOTA_WAITS_PER_RUN) throw e
+        quotaWaits++
+        await sleep(QUOTA_WAIT_MS)
+      }
+    }
+  }
   for (const id of ids) {
     try {
-      const t = await g.users.threads.get({
-        userId: "me",
-        id,
-        format: "metadata",
-        metadataHeaders: ["From", "Subject", "Date"],
-      })
+      await sleep(SCAN_PACE_MS)
+      const t = { data: await getMeta(id) }
       scanned++
       const msgs = t.data.messages ?? []
       const real = msgs.filter((m) => !(m.labelIds ?? []).includes("DRAFT"))
@@ -241,7 +274,8 @@ export async function runCoverageAudit(opts: { dryRun?: boolean } = {}): Promise
   if (missedAdded || missedCleared)
     console.log(`[coverage] "${MISSED_LABEL_NAME}" folder: +${missedAdded} added, -${missedCleared} cleared`)
   console.log(
-    `[coverage] scanned ${scanned}/${ids.length} threads — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts`
+    `[coverage] scanned ${scanned}/${ids.length} threads — ${unanswered.length} unanswered, ${staleDrafts.length} stale drafts` +
+      (quotaWaits ? ` (waited out the Gmail quota ${quotaWaits}x)` : "")
   )
   return { scanned, unanswered, staleDrafts }
 }
