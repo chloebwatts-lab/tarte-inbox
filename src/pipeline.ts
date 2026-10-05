@@ -2042,6 +2042,7 @@ export async function listInvoices(): Promise<InvoiceListRow[]> {
          SELECT status FROM inbox_payments WHERE thread_id = i.thread_id ORDER BY id DESC LIMIT 1
        ) p ON true
       WHERE i.invoice_number <> 'PENDING'
+        AND (i.thread_id IS NULL OR i.thread_id NOT LIKE 'fn:%' OR i.drafted_at IS NOT NULL)
       ORDER BY i.id DESC`
   )
   return rows
