@@ -301,3 +301,11 @@ CREATE INDEX IF NOT EXISTS inbox_nbi_confirmations_thread_idx
   ON inbox_nbi_confirmations(thread_id) WHERE thread_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS inbox_nbi_confirmations_state_idx
   ON inbox_nbi_confirmations(state, sent_at);
+
+-- Functions-app invoices (thread_id = 'fn:<function id>'): the Gmail draft the
+-- app asked for, so a repeat press replaces it and the sent copy can be
+-- archived. drafted_at also marks the invoice as real (in Xero, in sweeps).
+ALTER TABLE inbox_invoices
+  ADD COLUMN IF NOT EXISTS draft_id        text,
+  ADD COLUMN IF NOT EXISTS draft_thread_id text,
+  ADD COLUMN IF NOT EXISTS drafted_at      timestamptz;

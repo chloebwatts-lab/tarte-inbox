@@ -132,6 +132,7 @@ export async function runPostEventSweep(): Promise<{ flagged: number }> {
           ORDER BY id DESC LIMIT 1
        ) b ON TRUE
       WHERE i.thread_id <> ''
+        AND (i.thread_id NOT LIKE 'fn:%' OR i.drafted_at IS NOT NULL)
         AND (i.editable->>'event_date') ~ '^\\d{4}-\\d{2}-\\d{2}$'
         AND (i.editable->>'event_date')::date < (now() AT TIME ZONE 'Australia/Brisbane')::date
         AND i.post_event_flagged_at IS NULL

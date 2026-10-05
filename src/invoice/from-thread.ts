@@ -316,6 +316,8 @@ export async function buildInvoiceFromExtraction(
     threadId: string
     todayBrisbane: string
     kind?: "standard" | "balance"
+    // Functions-app invoices stay out of Xero until an email is drafted.
+    skipXero?: boolean
   }
 ): Promise<ThreadInvoiceResult> {
   const kind = opts.kind ?? "standard"
@@ -423,9 +425,11 @@ export async function buildInvoiceFromExtraction(
   // Mirror into Xero as a DRAFT dated the EVENT date so Louise can approve
   // and apply payments to the right period. Best-effort — a Xero hiccup must
   // never block the customer invoice.
-  await syncXeroEventDraft(gen.invoiceNumber, opts.threadId, x, lineItems).catch((e) =>
-    console.error("[invoice] xero event-draft sync failed:", e instanceof Error ? e.message : e)
-  )
+  if (!opts.skipXero) {
+    await syncXeroEventDraft(gen.invoiceNumber, opts.threadId, x, lineItems).catch((e) =>
+      console.error("[invoice] xero event-draft sync failed:", e instanceof Error ? e.message : e)
+    )
+  }
   return { ...gen, extraction: x }
 }
 

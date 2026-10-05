@@ -105,7 +105,7 @@ const FUNCTION_DEPOSIT_AUD = 500
 // accounts@tarte.com.au confirmed by Chris 2026-06-15).
 // Louise (bookkeeper, kilgour1@hotmail.com) is BCC'd on every event invoice
 // so she can apply it in Xero against the EVENT date (Chloe 2026-07-28).
-const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au", "kilgour1@hotmail.com"]
+export const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au", "kilgour1@hotmail.com"]
 
 /** Subject tag for invoice emails: the EVENT date (what Louise books the
  * revenue against) + the invoice number, e.g. " | EVENT Fri 31 Jul 2026 |
@@ -2194,6 +2194,8 @@ export async function regenerateInvoiceFromEdits(
   if (!rec) return { ok: false, error: "invoice not found" }
   if (!rec.editable) return { ok: false, error: "this invoice has no stored detail to edit" }
   if (!rec.thread_id) return { ok: false, error: "invoice is not linked to a thread" }
+  if (rec.thread_id.startsWith("fn:"))
+    return { ok: false, error: "this invoice was made in the functions app, edit it there" }
   if (!invoiceConfigReady()) return { ok: false, error: "invoice config not set" }
 
   // Merge edits over the stored extraction (skip blank/unchanged fields).
@@ -2339,7 +2341,19 @@ export async function sweepInvoiceDriveUploads(): Promise<number> {
         AND t.state = 'sent_by_human'`
   )
   for (const r of rows) await archiveThreadInvoicesToDrive(r.thread_id)
-  return rows.length
+  // Functions-app invoices are keyed on the app's function id, not the Gmail
+  // thread their draft went out in, so match those on draft_thread_id.
+  const fn = await db().query<{ thread_id: string }>(
+    `SELECT DISTINCT i.thread_id
+       FROM inbox_invoices i
+       JOIN inbox_threads t ON t.thread_id = i.draft_thread_id
+      WHERE i.thread_id LIKE 'fn:%'
+        AND i.drive_file_id IS NULL
+        AND i.pdf_bytes IS NOT NULL
+        AND t.state = 'sent_by_human'`
+  )
+  for (const r of fn.rows) await archiveThreadInvoicesToDrive(r.thread_id)
+  return rows.length + fn.rows.length
 }
 
 /**

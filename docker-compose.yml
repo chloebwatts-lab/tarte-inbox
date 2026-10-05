@@ -38,6 +38,10 @@ services:
       INVOICE_DRIVE_FOLDER_ID: ${INVOICE_DRIVE_FOLDER_ID:-}
       INVOICE_DRIVE_FOLDER_NAME: ${INVOICE_DRIVE_FOLDER_NAME:-Tarte Invoices}
       INVOICE_PORTAL_TOKEN: ${INVOICE_PORTAL_TOKEN:-}
+      FUNCTIONS_API_KEY: ${FUNCTIONS_API_KEY:-}
+      FUNCTIONS_APP_ORIGINS: ${FUNCTIONS_APP_ORIGINS:-https://tarte-functions-app.expo.app,http://localhost:8081,http://localhost:19006}
+      FUNCTIONS_CALENDAR_ID: ${FUNCTIONS_CALENDAR_ID:-}
+      FUNCTIONS_CALENDAR_NAME: ${FUNCTIONS_CALENDAR_NAME:-TARTE PTY LTD}
       TAKEAWAY_REMINDER_CALENDAR_ID: ${TAKEAWAY_REMINDER_CALENDAR_ID:-shawna@tarte.com.au}
       ALERT_EMAILS: ${ALERT_EMAILS:-hello@tarte.com.au,chloe@tarte.com.au,shawna@tarte.com.au}
     volumes:

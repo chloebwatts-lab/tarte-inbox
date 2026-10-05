@@ -24,8 +24,11 @@ import {
   type InvoiceEdits,
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
+import { fnApp } from "./functions-api.js"
 
 export const app = new Hono()
+
+app.route("/fn", fnApp)
 
 app.get("/health", (c) => c.json({ ok: true, ts: new Date().toISOString() }))
 

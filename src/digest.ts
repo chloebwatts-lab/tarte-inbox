@@ -121,6 +121,7 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
   }>(
     `SELECT invoice_number, customer_name, amount, kind FROM inbox_invoices
       WHERE created_at > now() - interval '24 hours'
+        AND (thread_id IS NULL OR thread_id NOT LIKE 'fn:%' OR drafted_at IS NOT NULL)
       ORDER BY id DESC`
   )
 

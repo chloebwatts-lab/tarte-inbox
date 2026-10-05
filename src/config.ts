@@ -90,6 +90,18 @@ const schema = z.object({
   // is doable from a phone (re-auth links etc.). Chris = chloe@, plus Shawna
   // and the shared hello@ mailbox (per Chris 2026-07-12).
   ALERT_EMAILS: z.string().default("hello@tarte.com.au,chloe@tarte.com.au,shawna@tarte.com.au"),
+
+  // --- Functions app API (/fn/*, see src/functions-api.ts) ---
+  // Bearer key the Tarte Functions app sends. Unset = the API is closed (401).
+  FUNCTIONS_API_KEY: z.string().optional(),
+  // Browser origins allowed to call it (comma-separated).
+  FUNCTIONS_APP_ORIGINS: z
+    .string()
+    .default("https://tarte-functions-app.expo.app,http://localhost:8081,http://localhost:19006"),
+  // Calendar confirmed functions are pushed to: an explicit id, else the
+  // calendar with this name in hello@'s list, else "Tarte Bookings (auto)".
+  FUNCTIONS_CALENDAR_ID: z.string().optional(),
+  FUNCTIONS_CALENDAR_NAME: z.string().default("TARTE PTY LTD"),
 })
 
 export type Config = z.infer<typeof schema>

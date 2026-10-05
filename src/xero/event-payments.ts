@@ -116,6 +116,7 @@ export async function eventPaymentsDigestSection(): Promise<string> {
        FROM inbox_invoices i
       WHERE i.invoice_number <> 'PENDING'
         AND i.thread_id IS NOT NULL AND i.thread_id <> ''
+        AND (i.thread_id NOT LIKE 'fn:%' OR i.drafted_at IS NOT NULL)
         AND (i.editable->>'event_date') IS NOT NULL
         AND (i.editable->>'event_date') >= to_char(now() AT TIME ZONE 'Australia/Brisbane' - interval '5 days', 'YYYY-MM-DD')
       ORDER BY i.thread_id, (i.kind = 'balance') DESC, i.id DESC`
