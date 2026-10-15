@@ -2233,7 +2233,7 @@ export async function regenerateInvoiceFromEdits(
   // is deleted ("Requested entity was not found"): treat it as draft-only.
   const thread: ParsedThread = await getThread(rec.thread_id).catch((e) => {
     if (/not found/i.test(e instanceof Error ? e.message : String(e)))
-      return { threadId: rec.thread_id, historyId: undefined, messages: [] }
+      return { threadId: rec.thread_id!, historyId: undefined, messages: [] }
     throw e
   })
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
