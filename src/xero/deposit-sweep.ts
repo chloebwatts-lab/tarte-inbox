@@ -131,7 +131,8 @@ async function applyReceived(c: Candidate, received: number, how: string): Promi
     const r = await upsertFunctionInvoice(c.thread_id.slice(3), "deposit", { amount_paid: received })
     if (!r.ok) throw new Error(r.error)
   } else {
-    await buildInvoiceFromExtraction(x, { bookingId: booking?.id ?? null, threadId: c.thread_id, todayBrisbane: todayBrisbane(), kind: "standard" })
+    // Money received changes the PDF, not the Xero lines: no Xero round trip.
+    await buildInvoiceFromExtraction(x, { bookingId: booking?.id ?? null, threadId: c.thread_id, todayBrisbane: todayBrisbane(), kind: "standard", skipXero: true })
   }
   if (paidInFull) {
     console.log(`[deposits] ${c.invoice_number}: paid in full $${received.toFixed(2)} (${how})`)
@@ -166,7 +167,7 @@ async function draftBalanceInvoice(threadId: string, x: InvoiceExtraction, booki
     console.log(`[deposits] balance ${r.invoice.invoice_number} drafted ($${balance.toFixed(2)} owing, functions app)`)
     return r.invoice.invoice_number
   }
-  const built = await buildInvoiceFromExtraction(x, { bookingId, threadId, todayBrisbane: todayBrisbane(), kind: "balance" })
+  const built = await buildInvoiceFromExtraction(x, { bookingId, threadId, todayBrisbane: todayBrisbane(), kind: "balance", skipXero: true })
   const { regenerateInvoiceFromEdits } = await import("../pipeline.js")
   const r = await regenerateInvoiceFromEdits(built.invoiceNumber, { amount_paid: received }, { body })
   if (!r.ok) throw new Error(r.error)
