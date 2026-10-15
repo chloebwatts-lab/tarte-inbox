@@ -38,7 +38,7 @@ interface PaidRow {
   matched_reference: string | null
 }
 
-function nameOverlap(customer: string | null, payer: string): boolean {
+export function nameOverlap(customer: string | null, payer: string): boolean {
   if (!customer || !payer) return false
   const a = customer.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 2)
   const b = payer.toLowerCase()
@@ -65,7 +65,7 @@ function fmtDay(iso: string): string {
  * non-generic payer is surfaced as a "possible" for humans, never persisted. */
 const GENERIC_PAYERS = /cash deposit|lightspeed|stripe|westpac|payclear|square|paypal/i
 
-function findAmount(
+export function findAmount(
   txns: MatchedPayment[],
   amount: number,
   customer: string | null

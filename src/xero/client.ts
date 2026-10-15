@@ -251,6 +251,15 @@ export async function resolveOnlineSalesAccountCode(): Promise<string> {
   return onlineSalesCode
 }
 
+/** Status + money applied on one Xero invoice (payments and allocated
+ * prepayments both count in amountPaid). */
+export async function xeroInvoiceSnapshot(
+  invoiceId: string
+): Promise<{ status: string; amountPaid: number; amountCredited: number }> {
+  const { tenantId } = await ensureXeroAuthed()
+  return getInvoiceSnapshot(tenantId, invoiceId)
+}
+
 async function getInvoiceSnapshot(
   tenantId: string,
   invoiceId: string

@@ -115,6 +115,20 @@ async function nbiTick(): Promise<void> {
   } catch (e) {
     console.error("[calsync] error:", e instanceof Error ? e.message : e)
   }
+  // Deposits that landed in the bank or were applied in Xero, with nobody
+  // typing them: mark paid, build the balance invoice, draft it in hello@.
+  try {
+    // DEPOSIT_SWEEP=off skips it, =dry only logs what it would do.
+    const mode = process.env.DEPOSIT_SWEEP ?? "on"
+    if (mode !== "off") {
+      const { sweepDepositsLanded } = await import("./xero/deposit-sweep.js")
+      const d = await sweepDepositsLanded({ dryRun: mode === "dry" })
+      if (d.landed || mode === "dry")
+        console.log(`[deposits] ${mode === "dry" ? "DRY RUN: " : ""}${d.landed} of ${d.checked} open invoice(s) had money land`, d.preview)
+    }
+  } catch (e) {
+    console.error("[deposits] sweep error:", e instanceof Error ? e.message : e)
+  }
   // Retry Drive archival for sent invoices missed at send time (e.g. pre-auth).
   try {
     const n = await sweepInvoiceDriveUploads()

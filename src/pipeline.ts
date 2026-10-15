@@ -2189,7 +2189,10 @@ export async function getInvoiceForEdit(invoiceNumber: string): Promise<InvoiceR
  */
 export async function regenerateInvoiceFromEdits(
   invoiceNumber: string,
-  edits: InvoiceEdits
+  edits: InvoiceEdits,
+  // Email wording to use instead of the live draft's (the deposit-landed
+  // sweep sends balance wording, not whatever deposit draft was sitting there).
+  opts: { body?: string } = {}
 ): Promise<{ ok: true; invoiceNumber: string } | { ok: false; error: string }> {
   const rec = await getInvoiceForEdit(invoiceNumber)
   if (!rec) return { ok: false, error: "invoice not found" }
@@ -2286,6 +2289,7 @@ export async function regenerateInvoiceFromEdits(
     (row?.meta?.["draftBody"] as string | undefined) ??
     ""
   const body =
+    opts.body ||
     prevBody ||
     `Hi ${x.customer_name ?? "there"},\n\nPlease find your updated invoice attached.\n\nKind Regards,\nTarte Management`
   const category = (row?.category as Category | undefined) ?? "events_beach_house_functions"
