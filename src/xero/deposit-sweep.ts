@@ -2,8 +2,10 @@
 // no money recorded, look for the deposit (or the whole total) in two places
 // Louise already keeps up to date: the Xero bank feed (reconciled RECEIVE
 // transactions) and the Xero invoice itself (payments or prepayments she
-// applied). A confirmed hit records the payment, puts it on the invoice,
-// builds the balance invoice and drops the balance email draft in hello@.
+// applied). A confirmed hit records the payment and puts it on the invoice
+// quietly. The remaining-balance invoice is built and its email drafted in
+// hello@ 14 days before the event (or at once if the event is closer), so
+// the girls get it when they would send it, not weeks early.
 //
 // Until 2026-10-15 none of this happened unless staff typed "amount paid" on
 // the edit page or the customer emailed "I've paid" (Georgia expected Xero to
@@ -97,47 +99,103 @@ async function candidates(): Promise<Candidate[]> {
   return rows.map((r) => ({ ...r, verified_sum: Number(r.verified_sum ?? 0) }))
 }
 
-/** Put the received amount on every invoice row of the thread, rebuild the
- * PDFs (deposit shows payment received; balance invoice created or refreshed)
- * and get the right email draft into hello@. */
-async function applyReceived(c: Candidate, received: number, how: string): Promise<void> {
+const BALANCE_DAYS_BEFORE = 14
+
+function daysUntil(isoDate: string): number {
+  const today = todayBrisbane()
+  return Math.round((Date.parse(`${isoDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400_000)
+}
+
+/** Record the money on every invoice row of the thread and rebuild the PDFs
+ * quietly (no email). A save-the-date hold stops there: the package invoice
+ * that follows carries the amount forward. A deposit on a package invoice
+ * gets its balance invoice drafted when the event is close (see
+ * draftBalanceInvoice), or now if it already is. */
+async function applyReceived(c: Candidate, received: number, how: string): Promise<string> {
   const x: InvoiceExtraction = { ...c.editable, amount_paid: received }
   const { total } = expectedAmounts(x)
   const paidInFull = received >= total - 0.005
-  const today = todayBrisbane()
   const booking = await getBookingByThread(c.thread_id).catch(() => null)
   if (booking) await updateBooking(booking.id, { state: paidInFull ? "paid" : "deposit_paid" }).catch(() => {})
-
-  const first = (x.customer_name ?? "there").split(/\s+/)[0]
-  const sign = "Kind Regards,\nTarte Management"
+  await db().query(
+    `UPDATE inbox_invoices SET editable = editable || jsonb_build_object('amount_paid', $2::float)
+      WHERE thread_id = $1 AND editable IS NOT NULL`,
+    [c.thread_id, received]
+  )
+  if (isSaveTheDate(x)) {
+    console.log(`[deposits] ${c.invoice_number}: save-the-date $${received.toFixed(2)} received (${how}), date held`)
+    return "held"
+  }
   if (c.thread_id.startsWith("fn:")) {
-    const { upsertFunctionInvoice, draftFunctionInvoiceEmail } = await import("../functions-api.js")
-    const fnId = c.thread_id.slice(3)
-    const r = await upsertFunctionInvoice(fnId, paidInFull ? "deposit" : "balance", { amount_paid: received })
+    const { upsertFunctionInvoice } = await import("../functions-api.js")
+    const r = await upsertFunctionInvoice(c.thread_id.slice(3), "deposit", { amount_paid: received })
     if (!r.ok) throw new Error(r.error)
-    await draftFunctionInvoiceEmail(r.invoice.invoice_number, {})
-    console.log(`[deposits] ${c.invoice_number}: $${received.toFixed(2)} received (${how}), ${paidInFull ? "paid in full" : `balance ${r.invoice.invoice_number} drafted`} (functions app)`)
-    return
+  } else {
+    await buildInvoiceFromExtraction(x, { bookingId: booking?.id ?? null, threadId: c.thread_id, todayBrisbane: todayBrisbane(), kind: "standard" })
   }
-
-  const { regenerateInvoiceFromEdits } = await import("../pipeline.js")
   if (paidInFull) {
-    const r = await regenerateInvoiceFromEdits(c.invoice_number, { amount_paid: received }, {
-      body: `Hi ${first},\n\nThank you, your payment of $${received.toFixed(2)} has been received and your booking is paid in full. A copy of the paid invoice is attached for your records.\n\n${sign}`,
-    })
-    if (!r.ok) throw new Error(r.error)
-    console.log(`[deposits] ${c.invoice_number}: paid in full $${received.toFixed(2)} (${how}), receipt drafted`)
-    return
+    console.log(`[deposits] ${c.invoice_number}: paid in full $${received.toFixed(2)} (${how})`)
+    return "paid"
   }
-  // Balance invoice: make it if the thread has none, then regenerate it (that
-  // also rebuilds the deposit invoice and replaces the draft in hello@).
-  const built = await buildInvoiceFromExtraction(x, { bookingId: booking?.id ?? null, threadId: c.thread_id, todayBrisbane: today, kind: "balance" })
+  console.log(`[deposits] ${c.invoice_number}: deposit $${received.toFixed(2)} received (${how})`)
+  if (c.has_balance || daysUntil(x.event_date!) <= BALANCE_DAYS_BEFORE) {
+    await draftBalanceInvoice(c.thread_id, x, booking?.id ?? null)
+    return "balance drafted"
+  }
+  return "deposit recorded"
+}
+
+/** Build (or refresh) the remaining-balance invoice for a thread whose
+ * deposit is in, and put the email draft with it in hello@. */
+async function draftBalanceInvoice(threadId: string, x: InvoiceExtraction, bookingId: number | null): Promise<string> {
+  const received = round2(x.amount_paid ?? 0)
+  const { total } = expectedAmounts(x)
   const balance = round2(total - received)
-  const r = await regenerateInvoiceFromEdits(built.invoiceNumber, { amount_paid: received }, {
-    body: `Hi ${first},\n\nThank you, your deposit of $${received.toFixed(2)} has been received and your date is locked in. Please find your remaining balance invoice attached. The balance of $${balance.toFixed(2)} is due 2 days prior to the event, along with your final numbers and dietaries.\n\n${sign}`,
-  })
+  const first = (x.customer_name ?? "there").split(/\s+/)[0]
+  const body =
+    `Hi ${first},\n\n` +
+    `Thank you, your deposit of $${received.toFixed(2)} has been received and your date is locked in. ` +
+    `Please find your remaining balance invoice attached. The balance of $${balance.toFixed(2)} is due 2 days prior to the event, along with your final numbers and dietaries.\n\n` +
+    `Kind Regards,\nTarte Management`
+  if (threadId.startsWith("fn:")) {
+    const { upsertFunctionInvoice, draftFunctionInvoiceEmail } = await import("../functions-api.js")
+    const r = await upsertFunctionInvoice(threadId.slice(3), "balance", { amount_paid: received })
+    if (!r.ok) throw new Error(r.error)
+    const d = await draftFunctionInvoiceEmail(r.invoice.invoice_number, { body })
+    if (!d.ok) throw new Error(d.error)
+    console.log(`[deposits] balance ${r.invoice.invoice_number} drafted ($${balance.toFixed(2)} owing, functions app)`)
+    return r.invoice.invoice_number
+  }
+  const built = await buildInvoiceFromExtraction(x, { bookingId, threadId, todayBrisbane: todayBrisbane(), kind: "balance" })
+  const { regenerateInvoiceFromEdits } = await import("../pipeline.js")
+  const r = await regenerateInvoiceFromEdits(built.invoiceNumber, { amount_paid: received }, { body })
   if (!r.ok) throw new Error(r.error)
-  console.log(`[deposits] ${c.invoice_number}: deposit $${received.toFixed(2)} received (${how}), balance ${built.invoiceNumber} drafted`)
+  console.log(`[deposits] balance ${built.invoiceNumber} drafted ($${balance.toFixed(2)} owing)`)
+  return built.invoiceNumber
+}
+
+/** Deposits already in, event within two weeks, no balance invoice yet. */
+async function balancesDue(): Promise<Array<{ thread_id: string; invoice_number: string; customer_name: string | null; editable: InvoiceExtraction }>> {
+  const { rows } = await db().query<{ thread_id: string; invoice_number: string; customer_name: string | null; editable: InvoiceExtraction }>(
+    `SELECT i.thread_id, i.invoice_number, i.customer_name, i.editable
+       FROM inbox_invoices i
+       LEFT JOIN LATERAL (
+         SELECT state FROM inbox_bookings WHERE thread_id = i.thread_id ORDER BY id DESC LIMIT 1
+       ) b ON TRUE
+      WHERE i.kind = 'standard'
+        AND i.invoice_number <> 'PENDING'
+        AND i.editable IS NOT NULL
+        AND i.thread_id IS NOT NULL AND i.thread_id <> ''
+        AND (i.thread_id NOT LIKE 'fn:%' OR i.drafted_at IS NOT NULL)
+        AND COALESCE(NULLIF(i.editable->>'amount_paid', '')::float, 0) > 0
+        AND (i.editable->>'event_date') ~ '^\\d{4}-\\d{2}-\\d{2}$'
+        AND (i.editable->>'event_date')::date BETWEEN (now() AT TIME ZONE 'Australia/Brisbane')::date
+                                                 AND (now() AT TIME ZONE 'Australia/Brisbane')::date + ${BALANCE_DAYS_BEFORE}
+        AND NOT EXISTS (SELECT 1 FROM inbox_invoices x WHERE x.thread_id = i.thread_id AND x.kind = 'balance' AND x.invoice_number <> 'PENDING')
+        AND COALESCE(b.state, '') <> 'cancelled'
+      ORDER BY i.id`
+  )
+  return rows
 }
 
 async function recordPayment(c: Candidate, amount: number, txnId: string | null, note: string): Promise<void> {
@@ -180,7 +238,7 @@ export async function sweepDepositsLanded(
       //    email, but never put on the invoice.
       if (c.verified_sum > 0) {
         preview.push(`${who(c)}: $${c.verified_sum.toFixed(2)} verified earlier, not yet on the invoice`)
-        if (!opts.dryRun) await applyReceived(c, round2(c.verified_sum), "verified earlier")
+        if (!opts.dryRun) preview[preview.length - 1] += ` -> ${await applyReceived(c, round2(c.verified_sum), "verified earlier")}`
         landed++
         continue
       }
@@ -192,7 +250,7 @@ export async function sweepDepositsLanded(
           preview.push(`${who(c)}: $${amt.toFixed(2)} applied on the Xero invoice (${snap.status})`)
           if (!opts.dryRun) {
             await recordPayment(c, amt, null, `applied on Xero invoice (${snap.status})`)
-            await applyReceived(c, amt, "applied in Xero")
+            preview[preview.length - 1] += ` -> ${await applyReceived(c, amt, "applied in Xero")}`
           }
           landed++
           continue
@@ -222,10 +280,24 @@ export async function sweepDepositsLanded(
         hit.txn.bankTransactionId,
         `${hit.txn.contactName} $${hit.amount.toFixed(2)} on ${hit.txn.date.slice(0, 10)} (deposit sweep)`
       )
-      await applyReceived(c, hit.amount, `bank feed, ${hit.txn.contactName} ${hit.txn.date.slice(0, 10)}`)
+      preview[preview.length - 1] += ` -> ${await applyReceived(c, hit.amount, `bank feed, ${hit.txn.contactName} ${hit.txn.date.slice(0, 10)}`)}`
       landed++
     } catch (e) {
       console.error(`[deposits] ${c.invoice_number} failed:`, e instanceof Error ? e.message : e)
+    }
+  }
+  // Balance invoices for deposits already in, once the event is close.
+  for (const b of await balancesDue()) {
+    const { total } = expectedAmounts(b.editable)
+    const received = round2(b.editable.amount_paid ?? 0)
+    if (received >= total - 0.005 || isSaveTheDate(b.editable)) continue
+    preview.push(`${b.invoice_number} ${b.customer_name ?? "?"} (event ${b.editable.event_date}): balance $${round2(total - received).toFixed(2)} due, drafting the balance invoice`)
+    if (opts.dryRun) continue
+    try {
+      const booking = await getBookingByThread(b.thread_id).catch(() => null)
+      await draftBalanceInvoice(b.thread_id, b.editable, booking?.id ?? null)
+    } catch (e) {
+      console.error(`[deposits] balance for ${b.invoice_number} failed:`, e instanceof Error ? e.message : e)
     }
   }
   return { checked: list.length, landed, preview }
