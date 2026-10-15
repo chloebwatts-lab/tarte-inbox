@@ -2229,7 +2229,13 @@ export async function regenerateInvoiceFromEdits(
     x.amount_paid = Math.round(gross * 100) / 100
   }
 
-  const thread = await getThread(rec.thread_id)
+  // A thread that held only our draft disappears from Gmail when that draft
+  // is deleted ("Requested entity was not found"): treat it as draft-only.
+  const thread: ParsedThread = await getThread(rec.thread_id).catch((e) => {
+    if (/not found/i.test(e instanceof Error ? e.message : String(e)))
+      return { threadId: rec.thread_id, historyId: undefined, messages: [] }
+    throw e
+  })
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
   // Reply onto the most recent customer-authored message. An invoice made
   // with "+ New invoice" has no such message: its thread holds only our own
