@@ -2230,10 +2230,14 @@ export async function regenerateInvoiceFromEdits(
   }
 
   const thread = await getThread(rec.thread_id)
-  if (!thread.messages.length) return { ok: false, error: "thread not found" }
   const helloMail = config().HELLO_MAILBOX.toLowerCase()
-  // Reply onto the most recent customer-authored message.
-  let latest = thread.messages[thread.messages.length - 1]!
+  // Reply onto the most recent customer-authored message. An invoice made
+  // with "+ New invoice" has no such message: its thread holds only our own
+  // draft (nothing at all once drafts are filtered out) or, once sent, only
+  // our own email. Before 2026-10-15 the first case answered "thread not
+  // found" and the second would have addressed the new draft to hello@
+  // itself (Georgia, Holly Turner TARTE-2026-00065).
+  let latest: ParsedMessage | null = null
   for (let i = thread.messages.length - 1; i >= 0; i--) {
     const m = thread.messages[i]!
     if (!m.from.toLowerCase().includes(helloMail)) {
@@ -2241,6 +2245,9 @@ export async function regenerateInvoiceFromEdits(
       break
     }
   }
+  const sentByUs = latest ? null : thread.messages[thread.messages.length - 1] ?? null
+  if (!latest && !sentByUs && !x.customer_email)
+    return { ok: false, error: "thread not found and the invoice has no customer email" }
 
   const today = todayBrisbaneStr()
   const built = await buildInvoiceFromExtraction(x, {
@@ -2280,16 +2287,47 @@ export async function regenerateInvoiceFromEdits(
   const d: DraftResult = { body, confidence: 0.5, flags: ["needs_human"] }
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   const suffix = rec.kind === "balance" ? " (Balance)" : ""
-  await deliver(thread, latest, d, category, playbook, {
+  const pdfAttachment = {
+    filename: `${built.invoiceNumber} - ${safeName}${suffix}.pdf`,
+    contentType: "application/pdf",
+    data: built.pdf,
+  }
+
+  if (!latest && !sentByUs) {
+    // Draft-only thread: replace our draft with a fresh standalone one to the
+    // customer, exactly as "+ New invoice" made it, and move the invoice onto
+    // the new thread (a replaced draft gets a new thread id).
+    await deleteThreadDrafts(rec.thread_id).catch(() => {})
+    const { threadId } = await createStandaloneDraftWithThread(
+      x.customer_email!,
+      `Your booking with Tarte${invoiceSubjectSuffix(x.event_date, built.invoiceNumber)}`,
+      body,
+      config().HELLO_MAILBOX,
+      "Tarte Team",
+      [pdfAttachment],
+      INVOICE_BCC
+    )
+    await db().query(`UPDATE inbox_invoices SET thread_id = $1 WHERE thread_id = $2`, [threadId, rec.thread_id])
+    await upsertThread({
+      thread_id: threadId,
+      last_message_id: "manual_invoice",
+      state: "drafted",
+      last_action: "drafted",
+      meta: { manualInvoice: true, invoiceNumber: built.invoiceNumber, draftBody: body },
+    })
+    await applyLabel(threadId, INVOICE_CREATED_LABEL).catch(() => {})
+    await applyLabel(threadId, ACTION_LABEL).catch(() => {})
+    console.log(`[invoice] regenerated ${built.invoiceNumber} from staff edits (draft-only thread ${rec.thread_id} -> ${threadId})`)
+    return { ok: true, invoiceNumber: built.invoiceNumber }
+  }
+
+  // Only our own sent email in the thread: reply in it, but to the customer,
+  // not back to ourselves.
+  const replyTo: ParsedMessage = latest ?? { ...sentByUs!, from: x.customer_email ?? sentByUs!.to[0] ?? sentByUs!.from }
+  await deliver(thread, replyTo, d, category, playbook, {
     bcc: INVOICE_BCC, invoiceCreated: true,
     subjectSuffix: invoiceSubjectSuffix(x.event_date, built.invoiceNumber),
-    extraAttachments: [
-      {
-        filename: `${built.invoiceNumber} - ${safeName}${suffix}.pdf`,
-        contentType: "application/pdf",
-        data: built.pdf,
-      },
-    ],
+    extraAttachments: [pdfAttachment],
   })
   console.log(`[invoice] regenerated ${built.invoiceNumber} from staff edits (thread ${rec.thread_id})`)
   return { ok: true, invoiceNumber: built.invoiceNumber }
