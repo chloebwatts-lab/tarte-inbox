@@ -8,6 +8,9 @@
 //   GET  /fn/invoices?function_id=      the invoices stored against a function
 //   GET  /fn/invoice/:number/pdf        the PDF itself
 //   POST /fn/invoice/:number/draft-email  put a draft (PDF attached) in hello@ Drafts
+//   POST /fn/draft-email                put any draft in hello@ Drafts: the app's own
+//                                       invoice file (from its Supabase bucket) or a
+//                                       thank-you note; never sends
 //   GET  /fn/enquiries                  function enquiries the inbox has parsed
 //   POST /fn/calendar                   push a function onto the functions calendar
 //
@@ -353,6 +356,124 @@ export async function draftFunctionInvoiceEmail(
   return { ok: true, invoice: summariseFnInvoice(fresh ?? row) }
 }
 
+// --- Any draft from the Functions app ---
+
+export type FnDraftKind = "invoice" | "thank_you" | "other"
+
+export interface FnDraftInput {
+  to: string
+  subject: string
+  body: string
+  kind: FnDraftKind
+  /** The app's own reference, e.g. "fn:<function id>:deposit"; stored on the
+   * thread so a person can trace a draft back to the function. */
+  ref?: string
+  /** The draft this one replaces (the app keeps the id we gave it last time),
+   * so pressing the button twice never leaves two drafts. */
+  replace_draft_id?: string
+  attachments: Array<{ filename: string; content_type: string; data_base64: string }>
+}
+
+export interface FnDraftResult {
+  draft_id: string
+  thread_id: string
+  draft_url: string
+  drafted_at: string
+}
+
+/** Attachments can come to 20 MB in total; Gmail refuses a draft above 25 MB
+ * once base64 overhead is counted. */
+export const FN_DRAFT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+
+/** Turn the request body into a draft the Gmail helper can build, or say what
+ * is wrong in words the app can show. Pure, so it is unit-testable. */
+export function parseFnDraft(
+  b: Record<string, unknown>
+): { ok: true; input: FnDraftInput; attachments: Array<{ filename: string; contentType: string; data: Buffer }> } | { ok: false; error: string } {
+  const to = str(b["to"])
+  const subject = str(b["subject"])
+  const body = typeof b["body"] === "string" ? (b["body"] as string).trim() : ""
+  if (!to) return { ok: false, error: "to (the customer's email) is required" }
+  if (!EMAIL_RE.test(to)) return { ok: false, error: `"${to}" is not an email address` }
+  if (!subject) return { ok: false, error: "subject is required" }
+  if (!body) return { ok: false, error: "body is required" }
+  const kindRaw = b["kind"]
+  const kind: FnDraftKind = kindRaw === "invoice" || kindRaw === "thank_you" ? kindRaw : "other"
+  const rawAtt = Array.isArray(b["attachments"]) ? (b["attachments"] as unknown[]) : []
+  const attachments: Array<{ filename: string; contentType: string; data: Buffer }> = []
+  let total = 0
+  for (const a of rawAtt) {
+    if (!a || typeof a !== "object") return { ok: false, error: "each attachment needs filename, content_type and data_base64" }
+    const o = a as Record<string, unknown>
+    const filename = (str(o["filename"]) ?? "attachment").replace(/[\\/"\r\n]/g, "_").slice(0, 120)
+    const contentType = (str(o["content_type"]) ?? "application/octet-stream").replace(/[^\w.+/-]/g, "")
+    const b64 = typeof o["data_base64"] === "string" ? (o["data_base64"] as string).replace(/^data:[^,]*,/, "") : ""
+    if (!b64) return { ok: false, error: `attachment "${filename}" has no data_base64` }
+    const data = Buffer.from(b64, "base64")
+    if (!data.length) return { ok: false, error: `attachment "${filename}" is not valid base64` }
+    total += data.length
+    if (total > FN_DRAFT_MAX_ATTACHMENT_BYTES) return { ok: false, error: "attachments are over 20 MB in total" }
+    attachments.push({ filename, contentType, data })
+  }
+  return {
+    ok: true,
+    input: {
+      to,
+      subject,
+      body,
+      kind,
+      ref: str(b["ref"]),
+      replace_draft_id: str(b["replace_draft_id"]),
+      attachments: rawAtt as FnDraftInput["attachments"],
+    },
+    attachments,
+  }
+}
+
+/** Put a draft the Functions app composed into hello@ Drafts. Never sends.
+ * Invoice drafts carry the accounts BCC like every other invoice email;
+ * thank-you notes go to the customer alone. Nothing touches Xero here: the
+ * app's own invoice files are not the inbox's generated invoices. */
+export async function draftFunctionsAppEmail(
+  b: Record<string, unknown>
+): Promise<{ ok: true; draft: FnDraftResult } | { ok: false; error: string }> {
+  const parsed = parseFnDraft(b)
+  if (!parsed.ok) return parsed
+  const { input, attachments } = parsed
+  if (input.replace_draft_id) await deleteDraft(input.replace_draft_id)
+  const { draftId, threadId } = await createStandaloneDraftWithThread(
+    input.to,
+    input.subject,
+    input.body,
+    config().HELLO_MAILBOX,
+    "Tarte Team",
+    attachments,
+    input.kind === "invoice" ? INVOICE_BCC : undefined,
+    { subjectAsIs: true }
+  )
+  await upsertThread({
+    thread_id: threadId,
+    last_message_id: "functions_app",
+    state: "drafted",
+    last_action: "drafted",
+    meta: { functionsApp: true, kind: input.kind, ref: input.ref ?? null },
+  })
+  await applyLabel(threadId, ACTION_LABEL).catch(() => {})
+  if (input.kind === "invoice") await applyLabel(threadId, INVOICE_CREATED_LABEL).catch(() => {})
+  console.log(`[fn] drafted ${input.kind} email to ${input.to} (${input.ref ?? "no ref"}, gmail thread ${threadId})`)
+  return {
+    ok: true,
+    draft: {
+      draft_id: draftId,
+      thread_id: threadId,
+      draft_url: `https://mail.google.com/mail/u/0/#all/${threadId}`,
+      drafted_at: new Date().toISOString(),
+    },
+  }
+}
+
 // --- Enquiries ---
 
 export function enquiryStatus(state: string): "confirmed" | "pending" | "cancelled" {
@@ -629,6 +750,12 @@ fnApp.post("/invoice/:number/draft-email", async (c) => {
     subject: str(b["subject"]),
     body: str(b["body"]),
   })
+  return c.json(r, r.ok ? 200 : 400)
+})
+
+fnApp.post("/draft-email", async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+  const r = await draftFunctionsAppEmail(b)
   return c.json(r, r.ok ? 200 : 400)
 })
 

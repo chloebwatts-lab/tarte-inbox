@@ -152,6 +152,48 @@ The inbox already reads every function enquiry that lands in hello@ and pulls ou
 - `status`: `"confirmed"`, `"tbc"` (title gets a TBC prefix) or `"cancelled"` (removes the entry).
 - Times are 24 hour Brisbane time. Leave `start_time` out for an all-day entry.
 
+## Any draft from the app: `POST /fn/draft-email`
+
+For emails the app composes itself: its own invoice file (the PDF or photo in the app's private `invoices` bucket) or the thank-you note. The inbox puts the email in hello@ Drafts and never sends it.
+
+```json
+{
+  "to": "jane@example.com",
+  "subject": "Your deposit invoice from Tarte",
+  "body": "Hi Jane,\n\nPlease find your deposit invoice attached ...",
+  "kind": "invoice",
+  "ref": "fn:<function id>:deposit",
+  "replace_draft_id": "r1234567890",
+  "attachments": [
+    { "filename": "Deposit invoice - Jane Doe.pdf", "content_type": "application/pdf", "data_base64": "JVBERi0x..." }
+  ]
+}
+```
+
+- `kind` is `"invoice"` (accounts, Shawna and Louise go on BCC, like every invoice email) or `"thank_you"` (customer only). Anything else is treated as `"other"`, customer only.
+- `attachments` is optional. Up to 20 MB in total, base64 in `data_base64` (a `data:` prefix is stripped).
+- `replace_draft_id`: pass back the `draft_id` from last time and that unsent draft is removed first, so pressing the button twice never leaves two drafts.
+- `ref` is anything that helps a person trace the draft back (the function id and slot). It is stored, not shown to the customer.
+- The subject is used exactly as given (no "Re:").
+
+The answer:
+
+```json
+{
+  "ok": true,
+  "draft": {
+    "draft_id": "r1234567890",
+    "thread_id": "18f3...",
+    "draft_url": "https://mail.google.com/mail/u/0/#all/18f3...",
+    "drafted_at": "2026-10-16T03:00:00.000Z"
+  }
+}
+```
+
+Keep `draft_id` and `draft_url` against the invoice or function in the app: the url is the "Open in Gmail" link, the id is what you send as `replace_draft_id` next time.
+
+Nothing goes to Xero from this call. The inbox's own generated invoices (`POST /fn/invoice` ... `/draft-email`) are the ones Louise's Xero drafts come from; the app's uploaded invoice files are just attached and sent by a person.
+
 ## Thank-you emails
 
-Not built yet. One-click sending from hello@ is Chloe's call (today everything is a draft a person sends). Ask her if you want a "Draft thank-you email" button that works like the invoice one.
+Use `POST /fn/draft-email` with `kind: "thank_you"`, the app's own wording, and no attachments. It lands in hello@ Drafts for a person to read and send. One-click sending from hello@ stays Chloe's call.

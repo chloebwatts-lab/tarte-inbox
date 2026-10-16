@@ -614,9 +614,13 @@ export async function createStandaloneDraft(
   fromEmail: string,
   fromName?: string,
   attachments: Attachment[] = [],
-  bcc?: string[]
+  bcc?: string[],
+  opts: { subjectAsIs?: boolean } = {}
 ): Promise<string> {
-  const subj = subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`
+  // Historically every standalone draft got a "Re:" so it reads like a reply
+  // to the customer's enquiry. Callers composing a fresh email (the Functions
+  // app's thank-you note) pass subjectAsIs to keep their subject verbatim.
+  const subj = opts.subjectAsIs || subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`
   const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail
   const headers = [
     `From: ${fromHeader}`,
@@ -681,9 +685,10 @@ export async function createStandaloneDraftWithThread(
   fromEmail: string,
   fromName?: string,
   attachments: Attachment[] = [],
-  bcc?: string[]
+  bcc?: string[],
+  opts: { subjectAsIs?: boolean } = {}
 ): Promise<{ draftId: string; threadId: string }> {
-  const draftId = await createStandaloneDraft(to, subject, bodyText, fromEmail, fromName, attachments, bcc)
+  const draftId = await createStandaloneDraft(to, subject, bodyText, fromEmail, fromName, attachments, bcc, opts)
   const g = await gmail()
   const d = await g.users.drafts.get({ userId: "me", id: draftId, format: "minimal" })
   const threadId = d.data.message?.threadId
