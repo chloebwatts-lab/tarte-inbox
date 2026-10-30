@@ -21,12 +21,19 @@ export function xero(): XeroClient {
       "accounting.contacts",
       "accounting.invoices",
       "accounting.settings.read",
-      // Read bank transactions to verify a deposit landed (re-auth needed once
-      // after adding this — until then xeroBankMatchReady() is false).
-      // Granular-model name: the legacy "accounting.transactions.read" is
-      // REJECTED by this app with invalid_scope (verified 2026-07-27 by
-      // probing the authorize endpoint).
-      "accounting.banktransactions.read",
+      // Bank transactions (read + write), payments, manual journals and
+      // attachment reads: the CBK bookkeeping work (payment allocation,
+      // month-end journals) runs through this token from 30 Oct 2026.
+      // Granular-model names only: probing the authorize endpoint on
+      // 2026-07-27 and 2026-10-30 showed Xero REJECTS the legacy
+      // accounting.transactions(.read), accounting.reports.read,
+      // accounting.journals.read and accounting.creditnotes(.read) for this
+      // app with invalid_scope. Re-auth needed once after any change here
+      // (until then xeroBankMatchReady() reflects the OLD stored scope).
+      "accounting.banktransactions",
+      "accounting.payments",
+      "accounting.manualjournals",
+      "accounting.attachments.read",
     ],
   })
   return client
