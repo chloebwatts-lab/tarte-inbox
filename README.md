@@ -105,7 +105,7 @@ On Mondays the digest run also writes learning proposals from staff edits (`inbo
 
 ## HTTP endpoints
 
-Public at the proxy: `/health`, `/oauth/google/start`, `/oauth/xero/start` and their callbacks. Token gated in the app: `/invoices`, `/invoice/*`, `/queue`, `/queue/*`. Everything else sits behind Caddy basic auth (the shared `tarte` login): `/status`, `/playbooks`, `POST /tick`, `POST /sync-nbi`, `POST /digest/run`, `POST /followups/run`, `POST /calendar-sync/run`, `POST /thread/:id/redraft`, `GET /thread/find`, `POST /booking/:id/invoice`.
+Public at the proxy: `/health`, `/oauth/google/start`, `/oauth/chloe/start` (chloe@ read-only grant for bookkeeping sessions, see DEPLOY.md), `/oauth/xero/start` and their callbacks. Token gated in the app: `/invoices`, `/invoice/*`, `/queue`, `/queue/*`. Everything else sits behind Caddy basic auth (the shared `tarte` login): `/status`, `/playbooks`, `POST /tick`, `POST /sync-nbi`, `POST /digest/run`, `POST /followups/run`, `POST /calendar-sync/run`, `POST /thread/:id/redraft`, `GET /thread/find`, `POST /booking/:id/invoice`.
 
 `/status` shows whether Google and Xero are linked, the granted scopes, and the live `auto_send` value.
 

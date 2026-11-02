@@ -75,6 +75,14 @@ Tokens are stored in `inbox_oauth_tokens` and refreshed automatically. A daily X
 
 `/status` (basic auth) lists the scopes actually granted. Features that need a scope the grant does not have stay dormant rather than failing (Drive archiving needs `drive.file`).
 
+## chloe@ read-only mail (CBK sessions)
+
+Since 2 Nov 2026 the app also holds a read-only Gmail grant for `chloe@tarte.com.au`, used only by Claude bookkeeper sessions through a CLI. It is a separate OAuth token row (`provider = gmail_chloe`), one scope (`gmail.readonly`), same Google client and redirect URI as hello@ (the `state` parameter routes the callback). The hello@ pipeline never reads it: `node dist/scripts/test-chloe-guard.js` proves that against the compiled output and fails the build if a leak appears. Run it after any change near `src/google/` or `src/server.ts`.
+
+- Link or re-link: Chloe, signed in as chloe@, opens `https://inbox.tarte.com.au/oauth/chloe/start` once. Any other account is refused and its token revoked. The callback page says `chloe@ connected, read-only`.
+- Use: `docker exec tarte-inbox-inbox-1 node /app/dist/scripts/chloe-mail.js search "<gmail query>" [max]`, then `thread <id>`, `message <id>`, `attachment <messageId> <attachmentId> /tmp/<file>` (then `docker cp`). `status` shows link state. How-to for CBK sessions lives in tarte-loose-ends `reference/xero-scripts/chloe-mail-README.md`.
+- `/status` carries a `chloe_readonly` line. There is no write path and none should be added here; anything that needs to act on chloe@'s mail is Chloe's to do.
+
 ## Running scripts on the droplet
 
 ```bash

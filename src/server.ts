@@ -8,6 +8,13 @@ import {
 } from "./google/oauth.js"
 import { xeroAuthUrl, exchangeXeroCallback } from "./xero/client.js"
 import {
+  chloeAuthUrl,
+  exchangeChloeCode,
+  chloeStatus,
+  CHLOE_OAUTH_STATE,
+  CHLOE_START_PATH,
+} from "./google/chloe-mail.js"
+import {
   runTick,
   progressBookingToInvoice,
   getInvoiceForEdit,
@@ -33,13 +40,15 @@ app.route("/fn", fnApp)
 app.get("/health", (c) => c.json({ ok: true, ts: new Date().toISOString() }))
 
 app.get("/status", async (c) => {
-  const [google, xero] = await Promise.all([
+  const [google, xero, chloe] = await Promise.all([
     getTokens("google"),
     getTokens("xero"),
+    chloeStatus(),
   ])
   return c.json({
     google: { linked: !!google, expiry: google?.expiry, scope: google?.scope },
     xero: { linked: !!xero, expiry: xero?.expiry, scope: xero?.scope },
+    chloe_readonly: chloe,
     auto_send: config().ENABLE_AUTO_SEND,
     tick_interval_s: config().TICK_INTERVAL_SECONDS,
   })
@@ -51,8 +60,25 @@ app.get("/oauth/google/start", (c) => {
   return c.redirect(googleAuthUrl("inbox"))
 })
 
+// chloe@ read-only consent (CBK sessions). Same Google client and redirect
+// URI as hello@; the state parameter routes the callback. See
+// google/chloe-mail.ts for the isolation rules.
+app.get(CHLOE_START_PATH, (c) => {
+  return c.redirect(chloeAuthUrl())
+})
+
 app.get("/oauth/google/callback", async (c) => {
   const code = c.req.query("code")
+  const state = c.req.query("state")
+  if (state === CHLOE_OAUTH_STATE) {
+    if (!code) return c.text(`chloe@ not connected: ${c.req.query("error") ?? "missing code"}`, 400)
+    try {
+      await exchangeChloeCode(code)
+      return c.text("chloe@ connected, read-only")
+    } catch (e) {
+      return c.text(`chloe@ not connected: ${e instanceof Error ? e.message : String(e)}`, 403)
+    }
+  }
   if (!code) return c.text("missing ?code", 400)
   try {
     await exchangeGoogleCode(code)

@@ -2,14 +2,15 @@
   "name": "tarte-inbox",
   "version": "0.0.1",
   "private": true,
-  "description": "Background email automation for hello@tarte.com.au — triage, drafting, calendar, Xero invoicing.",
+  "description": "Background email automation for hello@tarte.com.au \u2014 triage, drafting, calendar, Xero invoicing.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "tick": "tsx src/scripts/tick.ts"
+    "tick": "tsx src/scripts/tick.ts",
+    "test:chloe-guard": "npm run build && node dist/scripts/test-chloe-guard.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

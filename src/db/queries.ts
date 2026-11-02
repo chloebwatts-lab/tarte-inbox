@@ -12,8 +12,12 @@ export interface StoredTokens {
   extra: Record<string, unknown>
 }
 
+// "google" = hello@ (modify/send/calendar/drive), "xero" = Tarte Currumbin,
+// "gmail_chloe" = chloe@ read-only for CBK sessions (google/chloe-mail.ts only).
+export type TokenProvider = "google" | "xero" | "gmail_chloe"
+
 export async function getTokens(
-  provider: "google" | "xero"
+  provider: TokenProvider
 ): Promise<StoredTokens | null> {
   const r = await db().query<StoredTokens>(
     `SELECT provider, access_token, refresh_token, scope, token_type, expiry, extra
@@ -24,7 +28,7 @@ export async function getTokens(
 }
 
 export async function saveTokens(t: {
-  provider: "google" | "xero"
+  provider: TokenProvider
   access_token: string
   refresh_token?: string | null
   scope?: string | null
