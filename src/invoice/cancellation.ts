@@ -8,12 +8,20 @@ import { config } from "../config.js"
  * on purpose — cancelling books money, so a human pulls the trigger. */
 export const CANCEL_FUNCTION_LABEL = "Tarte / Cancel Function"
 
-/** Ops notices about event money go to Louise with Chloe in the loop. */
+/** Ops notices about event money go to accounts@ (the bookkeeper) with Chloe
+ * in the loop where a decision is hers. */
 const STAFF_NOTICE_RECIPIENTS = ["accounts@tarte.com.au", "chloe@tarte.com.au"]
 
-export async function notifyStaff(subject: string, body: string): Promise<void> {
+/** Routine close-out lists the bookkeeper works without Chloe (her call, 9 Nov 2026). */
+const BOOKKEEPER_ONLY = ["accounts@tarte.com.au"]
+
+export async function notifyStaff(
+  subject: string,
+  body: string,
+  recipients: readonly string[] = STAFF_NOTICE_RECIPIENTS
+): Promise<void> {
   const c = config()
-  for (const to of STAFF_NOTICE_RECIPIENTS) {
+  for (const to of recipients) {
     try {
       await sendPlainEmail(to, subject, body, c.HELLO_MAILBOX, "Tarte Events Accounting")
     } catch (e) {
@@ -116,7 +124,7 @@ interface SweepRow {
 
 /** Day-after-event sweep: any invoiced event whose date has passed but whose
  * booking never reached paid (and wasn't cancelled) gets ONE flag email to
- * Louise + Chloe — approve the Xero draft, apply the money, chase the
+ * accounts@ only (the bookkeeper closes these out) — approve the Xero draft, apply the money, chase the
  * balance, or no-show it via the cancel label. Keys off the INVOICE
  * extraction's event_date (booking rows rarely carry one); each thread is
  * flagged exactly once. */
@@ -157,7 +165,8 @@ export async function runPostEventSweep(): Promise<{ flagged: number }> {
       lines.join("\n\n"),
       ``,
       `Each event is only flagged once — this is the complete current list.`,
-    ].join("\n")
+    ].join("\n"),
+    BOOKKEEPER_ONLY
   )
   await db().query(
     `UPDATE inbox_invoices SET post_event_flagged_at = now() WHERE thread_id = ANY($1::text[])`,
