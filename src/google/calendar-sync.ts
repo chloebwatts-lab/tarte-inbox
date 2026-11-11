@@ -1,8 +1,13 @@
-// Mirrors ALL bookings into one dedicated Google calendar staff can see:
-// every upcoming Now Book It booking (high teas + restaurant) and every
-// function booking the agent is managing. Unconfirmed/deposit-pending
-// entries are prefixed "TBC —" so anyone glancing at the calendar knows a
-// window is held but not locked in.
+// Mirrors group bookings into one dedicated Google calendar staff can see:
+// Now Book It high-tea groups of MIN_GROUP_PAX or more (plus any NBI
+// function / Hideout / private service) and every function booking the agent
+// is managing. Unconfirmed/deposit-pending entries are prefixed "TBC: " so
+// anyone glancing at the calendar knows a window is held but not locked in.
+//
+// 11 Nov 2026 (Chloe): every 2-pax high tea used to land here too, ~185
+// entries, which buried the team's own functions in the hello@ calendar view
+// and a function got double booked. Small tables are now left off and the
+// ones already synced are deleted on the next run.
 //
 // The combined calendar is display-only for humans; availability checks read
 // the database + venue calendars as before, so mirroring here never double-
@@ -18,6 +23,14 @@ const SYNC_DAYS_AHEAD = 180
 const SITTING_MINUTES: Record<string, number> = {} // per-service overrides
 const DEFAULT_SITTING_MIN = 120
 const HIGH_TEA_SITTING_MIN = 90
+/** High teas smaller than this are ordinary seating, not worth a calendar slot. */
+export const MIN_GROUP_PAX = 10
+
+/** Which Now Book It bookings belong on the combined calendar. */
+export function isCalendarWorthy(service: string, pax: number): boolean {
+  if (/function|hideout|private/i.test(service)) return true
+  return /high tea/i.test(service) && pax >= MIN_GROUP_PAX
+}
 
 let cachedCalendarId: string | undefined
 
@@ -131,8 +144,11 @@ async function deleteEvent(
   if (deletedIds.has(id)) return
   try {
     await c.events.delete({ calendarId, eventId: id })
-  } catch {
-    // already gone — fine
+  } catch (e) {
+    // Already gone (404/410) is fine. Anything else (rate limit, network) is
+    // left unmarked so the next hourly run tries again.
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/404|410|not found|deleted/i.test(msg)) return
   }
   deletedIds.add(id)
   lastWritten.delete(id)
@@ -158,11 +174,11 @@ export async function syncCombinedCalendar(): Promise<{
   let removed = 0
   for (const b of rows) {
     const id = nbiEventId(b.booking_ref)
-    // Only EVENTS belong on this calendar — high teas and functions. Regular
-    // restaurant/cafe covers (the bulk of NBI) are noise here and made the
-    // calendar a "jumpscare" (Chris 2026-06-15). Delete any that were synced
-    // before, and never add them.
-    const isEvent = /high tea|function|hideout|private/i.test(b.service)
+    // Only GROUP events belong on this calendar. Regular restaurant/cafe
+    // covers made it a "jumpscare" (Chris 2026-06-15) and small high teas
+    // buried the team's functions (Chloe 2026-11-11). Delete any that were
+    // synced before, and never add them.
+    const isEvent = isCalendarWorthy(b.service, b.pax)
     if (b.status === "Cancelled" || !isEvent) {
       await deleteEvent(c, calendarId, id)
       if (b.status === "Cancelled") removed++
@@ -178,11 +194,11 @@ export async function syncCombinedCalendar(): Promise<{
       start.getTime() + sittingMinutes(b.service) * 60_000
     )
     await upsertEvent(c, calendarId, id, {
-      summary: `${tbc ? "TBC — " : ""}${b.service}: ${who} (${b.pax} pax)`,
+      summary: `${tbc ? "TBC: " : ""}${b.service}: ${who} (${b.pax} pax)`,
       description:
         `Now Book It ref ${b.booking_ref}\nStatus: ${b.status}` +
         (b.notes ? `\nNotes: ${b.notes}` : "") +
-        `\n(Auto-synced — manage in Now Book It, not here.)`,
+        `\n(Auto-synced. Manage it in Now Book It, not here.)`,
       start: { dateTime: start.toISOString(), timeZone: "Australia/Brisbane" },
       end: { dateTime: end.toISOString(), timeZone: "Australia/Brisbane" },
       transparency: tbc ? "transparent" : "opaque",
@@ -210,8 +226,8 @@ export async function syncCombinedCalendar(): Promise<{
     const tbc = f.state !== "deposit_paid" && f.state !== "paid"
     const venueName = f.venue === "tea_garden" ? "Tea Garden" : "Beach House"
     await upsertEvent(c, calendarId, `fnbooking${f.id}`, {
-      summary: `${tbc ? "TBC — " : ""}Function ${venueName}: ${f.customer_name ?? "unknown"}${f.pax ? ` (${f.pax} pax)` : ""}`,
-      description: `Inbox function booking ${f.id} — state: ${f.state}${tbc ? " (deposit not yet paid — held, not locked in)" : ""}`,
+      summary: `${tbc ? "TBC: " : ""}Function ${venueName}: ${f.customer_name ?? "unknown"}${f.pax ? ` (${f.pax} pax)` : ""}`,
+      description: `Inbox function booking ${f.id}, state: ${f.state}${tbc ? " (deposit not yet paid, so held but not locked in)" : ""}`,
       start: {
         dateTime: new Date(f.event_start).toISOString(),
         timeZone: "Australia/Brisbane",
