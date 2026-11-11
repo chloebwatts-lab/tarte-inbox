@@ -103,9 +103,9 @@ const SLOT_DURATION_DEFAULT_HOURS = 3
 const FUNCTION_DEPOSIT_AUD = 500
 // Deposit invoices BCC accounts + Shawna when sent (Shawna 2026-06-15;
 // accounts@tarte.com.au confirmed by Chris 2026-06-15).
-// Louise (bookkeeper, kilgour1@hotmail.com) is BCC'd on every event invoice
-// so she can apply it in Xero against the EVENT date (Chloe 2026-07-28).
-export const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au", "kilgour1@hotmail.com"]
+// Louise Kilgour was BCC'd here until 11 Nov 2026, when Chloe locked her out of
+// everything. The bookkeeper copy now comes from accounts@ only.
+export const INVOICE_BCC = ["shawna@tarte.com.au", "accounts@tarte.com.au"]
 
 /** Subject tag for invoice emails: the EVENT date (what Louise books the
  * revenue against) + the invoice number, e.g. " | EVENT Fri 31 Jul 2026 |
@@ -2485,7 +2485,7 @@ async function composeAndDeliverInvoice(
   if (!d.flags.includes("needs_human")) d.flags.push("needs_human")
   const safeName = (x.customer_name ?? "customer").replace(/[^A-Za-z0-9 ]/g, "").trim()
   await deliver(thread, latest, d, category, playbook, {
-    // BCC accounts + Shawna + Louise so the sent invoice copies them in.
+    // BCC accounts + Shawna so the sent invoice copies them in.
     bcc: INVOICE_BCC, invoiceCreated: true,
     subjectSuffix: invoiceSubjectSuffix(x.event_date, built.invoiceNumber),
     extraAttachments: [
