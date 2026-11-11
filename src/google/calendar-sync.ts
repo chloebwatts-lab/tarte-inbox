@@ -109,6 +109,14 @@ function nbiEventId(ref: string): string {
 const lastWritten = new Map<string, string>()
 const deletedIds = new Set<string>()
 
+// After a restart every entry is written or deleted once, a few hundred calls
+// in a row, which tripped Google's per-user "Rate Limit Exceeded". Space the
+// calls out, and skip (retry next hour) any write Google throttles.
+const CALL_GAP_MS = 250
+const pace = (): Promise<void> => new Promise((r) => setTimeout(r, CALL_GAP_MS))
+const isRateLimit = (msg: string): boolean => /rate limit|quota|429|userRateLimitExceeded/i.test(msg)
+let running = false
+
 async function upsertEvent(
   c: calendar_v3.Calendar,
   calendarId: string,
@@ -118,17 +126,21 @@ async function upsertEvent(
   const payload = JSON.stringify(body)
   if (lastWritten.get(id) === payload) return
   try {
-    await c.events.insert({ calendarId, requestBody: { ...body, id } })
+    await pace()
+    try {
+      await c.events.insert({ calendarId, requestBody: { ...body, id } })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // 409: already there. 410: the id was used and deleted before. Either
+      // way an update writes (or revives) it.
+      if (!/409|already exists|410/i.test(msg)) throw e
+      await pace()
+      await c.events.update({ calendarId, eventId: id, requestBody: body })
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (/409|already exists/i.test(msg)) {
-      await c.events.update({ calendarId, eventId: id, requestBody: body })
-    } else if (/410/.test(msg)) {
-      // id was used and deleted before — fall back to update (revives it)
-      await c.events.update({ calendarId, eventId: id, requestBody: body })
-    } else {
-      throw e
-    }
+    if (isRateLimit(msg)) return // not marked written, so next hour retries
+    throw e
   }
   lastWritten.set(id, payload)
   deletedIds.delete(id)
@@ -143,6 +155,7 @@ async function deleteEvent(
   // were for restaurant covers that never existed on the calendar at all.
   if (deletedIds.has(id)) return
   try {
+    await pace()
     await c.events.delete({ calendarId, eventId: id })
   } catch (e) {
     // Already gone (404/410) is fine. Anything else (rate limit, network) is
@@ -158,6 +171,16 @@ export async function syncCombinedCalendar(): Promise<{
   synced: number
   removed: number
 } | null> {
+  if (running) return { synced: 0, removed: 0 } // the hourly run and a manual run never overlap
+  running = true
+  try {
+    return await syncOnce()
+  } finally {
+    running = false
+  }
+}
+
+async function syncOnce(): Promise<{ synced: number; removed: number } | null> {
   const calendarId = await ensureCombinedCalendar()
   if (!calendarId) return null
   const c = await cal()
