@@ -10,6 +10,10 @@
  *   POST /create  ONE bill, which must be ACCPAY + DRAFT, on an existing
  *                 ACTIVE contact, with no InvoiceID (never an update)
  *   POST /attach  a PDF onto a bill (needs the accounting.attachments grant)
+ *   POST /sales   READ ONLY: the org's revenue accounts and its ACCREC
+ *                 invoices dated in a window (Kitchen counts event invoices,
+ *                 dated the event day, in the wage % revenue; Chloe 12 Nov
+ *                 2026: "all revenue ... uber bopple and events from Xero")
  *   GET  /status  whether the attachments grant is in, which orgs are linked
  * Anything else is refused. It never authorises, pays, voids, deletes or
  * creates a contact.
@@ -151,6 +155,58 @@ async function readOrg(org: string, since: string) {
   return { contacts, bills }
 }
 
+/** The few sales-invoice fields Kitchen's event-revenue count reads. */
+export function liteSale(s: Record<string, any>) {
+  return {
+    InvoiceID: s.InvoiceID,
+    Status: s.Status,
+    InvoiceNumber: s.InvoiceNumber ?? "",
+    Reference: s.Reference ?? "",
+    Contact: { Name: s.Contact?.Name ?? "" },
+    Date: dateOnly(s.DateString),
+    LineAmountTypes: s.LineAmountTypes,
+    Total: s.Total,
+    LineItems: (s.LineItems ?? []).map((l: Record<string, any>) => ({
+      Description: l.Description ?? "",
+      AccountCode: l.AccountCode ?? "",
+      LineAmount: l.LineAmount ?? 0,
+      TaxAmount: l.TaxAmount ?? 0,
+      Tracking: (l.Tracking ?? []).map((t: Record<string, any>) => ({ Name: t.Name, Option: t.Option })),
+    })),
+  }
+}
+
+/** Revenue accounts per org, cached: the chart barely changes and Xero's
+ * daily call allowance is shared with the CBK scripts and the bill drafts. */
+const accountsCache = new Map<string, { at: number; rows: { Code: string; Name: string; Type: string }[] }>()
+const ACCOUNTS_TTL_MS = 6 * 60 * 60 * 1000
+
+async function revenueAccounts(org: string) {
+  const hit = accountsCache.get(org)
+  if (hit && Date.now() - hit.at < ACCOUNTS_TTL_MS) return hit.rows
+  const j = (await xeroCall(org, "GET", `/Accounts?${whereQ('Class=="REVENUE"')}`)) as { Accounts?: any[] }
+  const rows = (j.Accounts ?? []).filter((a) => a.Code).map((a) => ({ Code: String(a.Code), Name: String(a.Name ?? ""), Type: String(a.Type ?? "") }))
+  accountsCache.set(org, { at: Date.now(), rows })
+  return rows
+}
+
+/** ACCREC invoices dated in [from, to), live statuses only (voided and
+ * deleted ones are not revenue). Paged so Xero returns the line items. */
+async function readSales(org: string, from: string, to: string) {
+  const [fy, fm, fd] = from.split("-").map(Number)
+  const [ty, tm, td] = to.split("-").map(Number)
+  const where = `Type=="ACCREC" AND Date>=DateTime(${fy},${fm},${fd}) AND Date<DateTime(${ty},${tm},${td})`
+  const invoices: ReturnType<typeof liteSale>[] = []
+  for (let page = 1; page <= 20; page++) {
+    const j = (await xeroCall(org, "GET", `/Invoices?${whereQ(where)}&Statuses=DRAFT,SUBMITTED,AUTHORISED,PAID&order=Date&page=${page}&pageSize=500`)) as { Invoices?: any[] }
+    const rows = j.Invoices ?? []
+    invoices.push(...rows.map(liteSale))
+    if (rows.length < 500) break
+    await sleep(1100)
+  }
+  return { accounts: await revenueAccounts(org), invoices }
+}
+
 async function findByNumber(org: string, invoiceNumber: string) {
   const j = (await xeroCall(org, "GET", `/Invoices?${whereQ(`Type=="ACCPAY" AND InvoiceNumber=="${invoiceNumber}"`)}`)) as { Invoices?: any[] }
   return (j.Invoices ?? []).map(liteBill)
@@ -208,6 +264,19 @@ kitchenBillsApp.post("/read", async (c) => {
   if (!org || !ORGS[org] || !YMD.test(since ?? "")) return c.json({ ok: false, error: "org and since (yyyy-mm-dd) required" }, 400)
   try {
     return c.json({ ok: true, ...(await readOrg(org, since!)) })
+  } catch (e) {
+    return fail(c, e)
+  }
+})
+
+kitchenBillsApp.post("/sales", async (c) => {
+  const { org, from, to } = (await c.req.json().catch(() => ({}))) as { org?: string; from?: string; to?: string }
+  if (!org || !ORGS[org] || !YMD.test(from ?? "") || !YMD.test(to ?? "") || from! >= to!)
+    return c.json({ ok: false, error: "org, from and to (yyyy-mm-dd, from before to) required" }, 400)
+  // At most about 13 weeks back: enough for Kitchen's 45-day feed, small enough to stay one page.
+  if (Date.parse(to!) - Date.parse(from!) > 92 * 86400_000) return c.json({ ok: false, error: "window is 92 days at most" }, 400)
+  try {
+    return c.json({ ok: true, ...(await readSales(org, from!, to!)) })
   } catch (e) {
     return fail(c, e)
   }
