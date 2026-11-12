@@ -161,7 +161,8 @@ export const AVAILABILITY_RULES = `How to use this (strict):
 - If a space they want is listed as taken or held on their date, say so plainly (never name another customer), then offer what we CAN do: another date, or the Tea Garden options in section 4 of PACKAGES BY SPACE when it is the Hideout that is taken.
 - Only mention that a space is taken if the customer asked for that space, asked for a private room, or it is clearly the right fit for what they want. Do not volunteer it otherwise.
 - A "held" entry is another enquiry that has not confirmed. Treat the space as taken for now and add "needs_human" so a teammate can decide.
-- If nothing clashes, do not comment on availability at all. Close with: "Let me know which option you are most interested in and I would be more than happy to check availability and get something booked in for you."
+- A date carrying the customer's OWN hold or booking is not "free" either: do not describe it as open, promising or available. Just carry on with their booking.
+- If nothing clashes, do not comment on availability at all, not even softly ("looks promising", "should be fine"). Close with: "Let me know which option you are most interested in and I would be more than happy to check availability and get something booked in for you."
 - Always add "needs_human" when the customer has named a date, so a teammate checks the calendar and the booking system before this is sent.`
 
 /** Pure renderer, so it can be tested without Google. */
@@ -254,7 +255,7 @@ export async function availabilityBlock(dates: string[], customerNames: string[]
 // Phrases that assert availability or a made booking. The drafter is told not
 // to write them; this catches the ones that slip through so staff see a flag.
 const CLAIM_RE =
-  /\b(looks?|looking|seems?)\s+(wide\s+)?(open|available|free|clear|good|great|workable)\b|\b(is|are)\s+(still\s+|currently\s+)?(available|free)\b|\bworks?\s+(well\s+for\s+us|for\s+us|well|perfectly)\b|\bwe\s+have\s+availability\b|\b(is|are)\s+all\s+yours\b|\b(have|has|'ve)\s+(gone\s+ahead\s+and\s+)?(booked|locked|reserved|pencilled)\b|\ball\s+booked\s+in\b/i
+  /\b(looks?|looking|seems?)\s+(wide\s+)?(open|available|free|clear|good|great|workable|promising|fine|ok|okay|possible|doable|positive)\b|\b(is|are)\s+(still\s+|currently\s+)?(available|free)\b|\bworks?\s+(well\s+for\s+us|for\s+us|well|perfectly)\b|\bwe\s+have\s+availability\b|\b(is|are)\s+all\s+yours\b|\b(have|has|'ve)\s+(gone\s+ahead\s+and\s+)?(booked|locked|reserved|pencilled)\b|\ball\s+booked\s+in\b/i
 
 export function claimsAvailability(body: string): boolean {
   return CLAIM_RE.test(body)

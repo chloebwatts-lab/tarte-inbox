@@ -74,6 +74,7 @@ for (const s of [
   "both are looking good from our end",
   "Sunday 6th December at 9:00am works well for us",
   "a 9:00am start works well",
+  "The 5th of December looks promising from our end",
   "A 10:00am start looks workable",
   "the Hideout is available on that date",
   "I have gone ahead and booked you in",
