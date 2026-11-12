@@ -69,7 +69,7 @@ The category label on this email is only a routing guess. Work out which space t
      - Set Brunch in the Tea Garden ${TG_BRUNCH_LINE}
      - Set Lunch in the Tea Garden $${TG_SET_LUNCH}pp
      - Family Style Lunch in the Tea Garden $${TG_FAMILY_LUNCH}pp
-   Say plainly that the Hideout is already booked that day and that we can host them in the Tea Garden instead, name the option(s) that fit with the price, and add "needs_human". Quote these prices as they are: do not add a private section fee, hire fee, deposit or any other extra to them, and do not swap in the Tea Garden high tea prices. A teammate confirms the set up. If there is no Calendar check, or it does not say the Hideout is taken, these three prices do not exist: do not mention them.`
+   This is the FIRST thing to offer for that date, ahead of a Tea Garden high tea or a different date: say plainly that the Hideout is already booked that day and that we can host them in the Tea Garden instead, list these options with their prices, and add "needs_human". Quote these prices as they are: do not add a private section fee, hire fee, deposit or any other extra to them, and do not swap in the Tea Garden high tea prices. A teammate confirms the set up. If there is no Calendar check, or it does not say the Hideout is taken, these three prices do not exist: do not mention them.`
 
 /** Every dollar figure the block above legitimately contains. */
 export function packageAmounts(): Set<string> {
