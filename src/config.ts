@@ -91,6 +91,10 @@ const schema = z.object({
   // and the shared hello@ mailbox (per Chris 2026-07-12).
   ALERT_EMAILS: z.string().default("hello@tarte.com.au,chloe@tarte.com.au,shawna@tarte.com.au"),
 
+  // --- Kitchen draft supplier bills (/internal/xero-bills/*, src/kitchen-bills.ts) ---
+  // Bearer key the Tarte Kitchen app sends. Unset = the endpoint is closed (401).
+  KITCHEN_BILLS_KEY: z.string().optional(),
+
   // --- Functions app API (/fn/*, see src/functions-api.ts) ---
   // Bearer key the Tarte Functions app sends. Unset = the API is closed (401).
   FUNCTIONS_API_KEY: z.string().optional(),

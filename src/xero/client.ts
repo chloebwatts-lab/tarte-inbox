@@ -33,7 +33,10 @@ export function xero(): XeroClient {
       "accounting.banktransactions",
       "accounting.payments",
       "accounting.manualjournals",
-      "accounting.attachments.read",
+      // Attachments (read and write): Kitchen's DRAFT supplier bills carry
+      // the invoice PDF (src/kitchen-bills.ts, from 12 Nov 2026). Probed on
+      // 12 Nov 2026: Xero accepts this scope for this app.
+      "accounting.attachments",
     ],
   })
   return client
@@ -107,6 +110,24 @@ async function ensureXeroAuthed(): Promise<{ tenantId: string }> {
   const tenant = tarte ?? tenants[0]
   if (!tenant) throw new Error("xero linked but no tenants — re-authorise")
   return { tenantId: tenant.tenantId }
+}
+
+/**
+ * A fresh access token and tenant id for one org, matched by name, for plain
+ * REST calls (the Kitchen draft-bills endpoint, src/kitchen-bills.ts). Uses
+ * the same refresh as everything else here. `scope` is the stored grant.
+ */
+export async function xeroTenantAccess(
+  nameRe: RegExp
+): Promise<{ accessToken: string; tenantId: string; tenantName: string; scope: string }> {
+  await ensureXeroAuthed()
+  const stored = await getTokens("xero")
+  const tenants = (stored?.extra?.["tenants"] as Array<{ tenantId: string; tenantName: string }> | undefined) ?? []
+  const t = tenants.find((x) => nameRe.test(x.tenantName))
+  if (!t) throw new Error(`xero: no linked org matches ${nameRe} (linked: ${tenants.map((x) => x.tenantName).join(", ")})`)
+  const accessToken = xero().readTokenSet().access_token
+  if (!accessToken) throw new Error("xero: no access token after refresh")
+  return { accessToken, tenantId: t.tenantId, tenantName: t.tenantName, scope: stored?.scope ?? "" }
 }
 
 /**

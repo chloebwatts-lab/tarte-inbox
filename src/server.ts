@@ -32,10 +32,12 @@ import {
 } from "./pipeline.js"
 import { listPlaybooks, upsertPlaybook, getTokens } from "./db/queries.js"
 import { fnApp } from "./functions-api.js"
+import { kitchenBillsApp } from "./kitchen-bills.js"
 
 export const app = new Hono()
 
 app.route("/fn", fnApp)
+app.route("/internal/xero-bills", kitchenBillsApp)
 
 app.get("/health", (c) => c.json({ ok: true, ts: new Date().toISOString() }))
 
@@ -95,7 +97,7 @@ app.get("/oauth/xero/start", async (c) => {
 app.get("/oauth/xero/callback", async (c) => {
   try {
     await exchangeXeroCallback(c.req.url)
-    return c.text("xero linked — you can close this tab.")
+    return c.text("Xero linked. You can close this tab.")
   } catch (e) {
     return c.text(`xero oauth failed: ${e instanceof Error ? e.message : String(e)}`, 500)
   }
