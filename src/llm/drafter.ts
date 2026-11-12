@@ -1,6 +1,9 @@
 import { anthropic, MODEL } from "./client.js"
 import { listActiveHouseNotes, type Playbook } from "../db/queries.js"
 import type { Category } from "./classifier.js"
+import { PACKAGES_BLOCK, amountsIn } from "./packages.js"
+import { extractBooking } from "./booking.js"
+import { availabilityBlock, claimsAvailability, datesToCheck } from "../availability.js"
 
 export interface DraftRequest {
   category: Category
@@ -8,6 +11,10 @@ export interface DraftRequest {
   threadHistory: Array<{ from: string; date: Date; text: string }>
   customerName?: string
   customExtras?: Array<{ role: "user" | "assistant"; content: string }>
+  /** Dates (YYYY-MM-DD) to check against the function calendar. When omitted,
+   * booking-type categories work them out from the thread themselves, so
+   * EVERY draft path gets the check, not just new function enquiries. */
+  calendarDates?: string[]
 }
 
 export interface DraftResult {
@@ -23,16 +30,16 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - DINNER & EVENINGS: we are NOT open for dinner and do NOT offer evening events or functions yet — EVERYTHING is daytime, including private functions. If a customer asks about dinner, evening dining, or an evening event, answer with a friendly variation of "not yet, but watch this space" — upbeat, no apology, no promised date — then pivot to daytime options. NEVER propose or agree to a start time after mid-afternoon.
 - DATES: when booking info lists proposed slots, copy the weekday/date/time labels exactly as given. Never compute a weekday yourself.
 - GROUP DINING (a TABLE booking) vs PRIVATE HIRE (a function): a group that just wants a TABLE for breakfast / brunch / lunch is a normal dining booking — we love groups and rarely turn one away. DEFAULT to "yes, we'd love to host you", never claim no availability just because other bookings exist (the restaurant, Tea Garden and cafe seat many groups at once). A table booking does NOT need a deposit and is NOT a function — never mention a deposit or packages for it.
-  - SET MENU PACKAGES (Restaurant Shared Dining Room): for tables of 12 TO 16 GUESTS (16 is the MAX for a restaurant set-menu table). A set menu is required on every day EXCEPT Monday to Thursday. So it's required Friday, Saturday and Sunday; Monday to Thursday a group of 12-16 can still order off the regular menu. (Set menu smooths service in a shared space.) MORE THAN 16 in the restaurant is by SPECIAL REQUEST ONLY: never promise it — say we may be able to accommodate larger groups on request, add "needs_human", and also offer the private/function options (Hideout, Tea Garden) which fit bigger groups. Two options (both in the attached functions pack):
-    - SET BRUNCH $45pp: choice of main (avo toast, twice salmon bagel, or eggs your way with a side), housemade pastry (rotating selection - croissants, crullers, muffin tops, cookies), barista coffee or tea, and shared jugs of fresh juice.
-    - SET LUNCH $65pp: crispy chilli burrata, hot honey sourdough and seasonal green salad shared to start; choice of main (crab linguine, steak and frites, grilled barramundi, or miso chicken sandwich with fries); housemade pastry to finish; coffee or tea.
-    Confirm the date/time they asked for, lay out the two set-menu options and ask which suits them best, then take their final numbers and dietaries so we can take it from there.
+  - RESTAURANT SET MENUS: tables of 12 to 16 in the restaurant need a set menu Friday to Sunday (prices and rules in PACKAGES BY SPACE, section 1). They are for the RESTAURANT. Do not offer them to a Tea Garden or Hideout enquiry unless section 4 applies. Name the two options with their prices in one line each and point to the attached functions pack for what is included. Do NOT type out the dishes. If the customer has not given a date, time or numbers yet, ask for those first and leave the menus for the next email.
   - A DEPOSIT (50%) and event packages only apply to EXCLUSIVE PRIVATE HIRE — whole-venue hire, or a private styled function (baby shower / hens) in the Hideout or a private Tea Garden section. Only raise a deposit when the customer actually wants exclusive/private hire.
-- LARGE GROUPS (30-60+): NEVER make it sound difficult or say we have no options. Be warm and can-do. Recommend TEA GARDEN WHOLE-VENUE HIRE with a package — "High Tea + Beer & Prosecco" at $55pp, or "High Tea + Canapés + Cocktails + Beer & Prosecco" at $90pp (venue-hire-only is also available; a $2,000 refundable bond and 50% deposit apply to exclusive hire). Point them to the attached functions pack to browse options.
+- LARGE GROUPS (30-60+): NEVER make it sound difficult or say we have no options. Be warm and can-do. Recommend TEA GARDEN WHOLE-VENUE HIRE and point them to the attached functions pack. If they ask what it costs, the hire fee and the per person package are BOTH payable (PACKAGES BY SPACE, section 3).
 - OFFER ALTERNATIVES: don't steer a customer to a single option. Where it fits, also mention a relevant alternative (e.g. a group brunch enquiry — also offer high tea) and let them choose. Don't sway to one decision unless it's genuinely the only fit.
 - AMBIGUOUS / MISSING YEAR: if a date is given without a year (e.g. "Saturday 5th", "in August"), ASK which year up front before quoting availability — don't assume, or your availability answer will be wrong.
 - PAST DATES: if the date they gave has already passed, assume it's a slip (likely a later month). Gently flag it and ASK them to confirm the date, rather than assuming a month and telling them it's unavailable.
-- FLEXIBLE TIMES: if their chosen day has no other bookings yet, it's wide open — tell them they're free to pick their preferred start time, don't pin them to narrow set slots.
+- AVAILABILITY: you cannot see the booking system. Never tell a customer a date or time is available, open or free, and never say a NEW booking has been made (a teammate does that). Only say a space is taken when a "Calendar check" below tells you so. Otherwise offer to check availability and get it booked in.
+- GROUPS OVER 12 CANNOT BOOK ONLINE: the website only takes bookings of up to 12 guests, in the restaurant and the Tea Garden. Never send a group of 13 or more to the website to book. Ask for whatever is missing (date, time, numbers) and say we will check availability and book it in for them.
+- SEATING REQUESTS (outdoor, verandah, window, a particular table or view): say we will note the preference but specific tables cannot be guaranteed. Never promise one, and never describe how busy or quiet a day will be.
+- CHRISTMAS: we are CLOSED on Christmas Day, every venue. We are open on all other public holidays (a surcharge applies). If asked about Christmas Day, say so simply and offer another day; nothing else.
 - AMENITIES / EQUIPMENT / SERVICES: NEVER claim we have, provide, or DON'T have a physical item (tablecloths, linen, cake stands, easels, speakers, high chairs) or that we do or don't offer a service, unless the cheat sheet or the thread says so explicitly. Guessing has burned us in BOTH directions (a draft invented tablecloths we don't provide; another denied the takeaway high tea we DO offer). If it's not in your facts, write the reply without that claim and add "needs_human" so a teammate fills in the real answer.
 - DIETARIES: keep it BRIEF. Something like "Yes, we're flexible and happy to accommodate dietaries as best we can - just let us know closer to the day." Never write a long over-explained dietary paragraph.
 - BOTTOMLESS MIMOSAS: YES, we offer them. A bottomless mimosa add-on is $39 per person for 75 minutes (available from 10am) on Tea Garden high teas. If anyone asks about bottomless drinks / bottomless brunch / mimosas, confirm we have this — never say we don't.
@@ -49,7 +56,7 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - HOURS: The Tea Garden / High Tea at Currumbin is open Wed-Fri 9am-2pm and Sat-Sun 7:30am-2:30pm, CLOSED Monday & Tuesday. The Currumbin cafe downstairs and Burleigh Heads are walk-in only. For Beach House restaurant booking times, point customers to our website (tarte.com.au/beachhouse) which shows live availability — do NOT quote specific restaurant opening hours.
 - BOOKING LINK: always send customers to our WEBSITE, https://tarte.com.au/beachhouse (the "Reserve" button there opens our booking system). NEVER paste a raw nowbookit.com link — use the tarte.com.au website page. If unsure, just say "you can book via our website, tarte.com.au".
 - BREVITY: write like a busy cafe manager — answer what was asked, one warm line, sign off. Don't recite the customer's booking details back at them unless they asked you to confirm something specific. Staff consistently shorten wordy drafts; start short instead.
-- FUNCTION ENQUIRIES — KEEP IT SHORT (5 sentences max): warmly say we'd love to host them, name the ONE format that fits (e.g. "whole-venue hire" or "a private section") in a few words, and REFER them to the attached functions pack for packages and pricing. Do NOT write out venue-hire fees, package prices ($55/$90pp), bond or deposit amounts in the email body — the pack has all of that; listing them makes the email far too long. Then ask for the key missing details (date, numbers, occasion). Let the pack do the heavy lifting.
+- FUNCTION ENQUIRIES — KEEP IT SHORT (5 sentences max): warmly say we'd love to host them, name the ONE format that fits (e.g. "whole-venue hire" or "a private section") in a few words, and REFER them to the attached functions pack for packages and pricing. Do NOT write out venue-hire fees, package prices, menus, bond or deposit amounts in a FIRST reply — the pack has all of that; listing them makes the email far too long. Ask for the ONE most important missing detail (date, numbers or which option), not a list of questions. When the customer asks a direct price question, answer it exactly from PACKAGES BY SPACE in one or two lines. Close function replies the way the team does: "Let me know which option you are most interested in and I would be more than happy to check availability and get something booked in for you."
 - HOLDING DEPOSIT / PRE-AUTH: when we secure a booking with a card, make clear it's a PRE-AUTHORISATION — just a temporary hold to secure the date, NO payment is actually taken. Reassure them on this whenever a card-on-file/holding deposit is mentioned. (A deposit INVOICE for a confirmed function is different — that's an actual payment; don't confuse the two.)
 - NEVER state a specific booking date, time, guest count or reference number unless it is given to you in the thread or the booking context. If you don't have it, stay general ("your upcoming booking", "your reservation") — do NOT guess. Inventing a wrong date in a confirmation or cancellation is worse than staying general.
 - PHONE CALLBACKS: if a customer asks to call or for a phone number and you don't have one in the cheat sheet, don't recite a website as "the number". Say we're happy to help right here over email, or ask for their number and a good time and we'll call them.`
@@ -57,6 +64,8 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner): warm, friendly, professional, never gushing. Australian English.
 
 ${BUSINESS_FACTS}
+
+${PACKAGES_BLOCK}
 
 Output STRICT JSON only:
 { "body": "<plain text reply>", "confidence": <0..1>, "flags": [<short strings>] }
@@ -77,11 +86,12 @@ Conventions:
   - If they named one or more dates (e.g. "last weekend in July", "the 15th", "anytime in October"), treat those dates as given. Do NOT say "if you can send through your preferred date".
   - If they named a pax count, treat it as given.
   - If they named a package or event type (high tea, baby shower, etc.), treat it as given.
-  - If "Booking flow info" below includes proposed slots, propose THOSE specific dates and times. Do not ask the customer to pick a date again.
 - If a question can't be answered without info you don't have AND that info is genuinely not in the thread, write a short holding reply and add "needs_human" to flags.
-- TEA GARDEN functions over 12 pax: the INITIAL reply (packages + proposed times) is fine to send — include a light line that we'll do a final floor-layout check for their group size before locking it in. Add "needs_floor_layout_check" to flags ONLY when the customer is CONFIRMING a specific slot (the locking-in reply), not on initial proposals.
+- TEA GARDEN functions over 12 pax: add "needs_floor_layout_check" to flags ONLY when the customer is CONFIRMING a specific slot (the locking-in reply), not on initial proposals.
 
-Flags to use when applicable: needs_human, needs_floor_layout_check, mentions_deposit, propose_slots, redirect_to_nbi.`
+- These rules beat the playbook below. If a playbook template or voice note tells you to list available windows, propose slots, or say a time is free, ignore that part.
+
+Flags to use when applicable: needs_human, needs_floor_layout_check, mentions_deposit, redirect_to_nbi.`
 
 function renderPlaybook(p: Playbook | null): string {
   if (!p) return ""
@@ -164,8 +174,80 @@ function todayLineBrisbane(): string {
   return `${weekday} ${date}`
 }
 
+// Categories where a customer may be asking about a date. Each of these gets
+// the calendar check, whichever code path asked for the draft.
+const CALENDAR_CATEGORIES = new Set<string>([
+  "events_beach_house_functions",
+  "events_tea_garden_functions",
+  "events_tea_garden_high_tea",
+  "bookings_dine_in",
+  "bookings_existing",
+  "general_enquiries",
+])
+const DATEISH_RE =
+  /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b(mon|tues?|wed(nes)?|thur?s?|fri|sat(ur)?|sun)(day)?\b|\b\d{1,2}(st|nd|rd|th)\b|\b\d{1,2}\/\d{1,2}\b|\b(tomorrow|next week|this weekend|new year|easter)\b/i
+
+async function calendarDatesFor(req: DraftRequest): Promise<string[]> {
+  if (req.calendarDates) return req.calendarDates
+  if (!CALENDAR_CATEGORIES.has(req.category)) return []
+  const text = renderThread(req.threadHistory)
+  if (!DATEISH_RE.test(text)) return []
+  try {
+    return datesToCheck(await extractBooking(text))
+  } catch (e) {
+    console.error("[drafter] date extraction failed:", e instanceof Error ? e.message : e)
+    return []
+  }
+}
+
+/** Display names of everyone on the thread who is not us, so calendar entries
+ * carrying the customer's own name are recognised as theirs. */
+function customerNamesFrom(req: DraftRequest): string[] {
+  const names = new Set<string>()
+  for (const m of req.threadHistory) {
+    if (/@tarte\.com\.au/i.test(m.from)) continue
+    const display = m.from.match(/^\s*"?([^"<@]+?)"?\s*</)?.[1]?.trim()
+    if (display) names.add(display)
+  }
+  if (req.customerName && ![...names].some((n) => n.toLowerCase().startsWith(req.customerName!.toLowerCase())))
+    names.add(req.customerName)
+  return [...names]
+}
+
+/** Deterministic checks on a finished draft. The prompt asks; this verifies.
+ * Anything caught is flagged for the teammate reviewing the draft. */
+export function guardDraft(
+  result: DraftResult,
+  ctx: { knownText: string; calendarBlock: string }
+): DraftResult {
+  if (!result.body) return result
+  const flags = new Set(result.flags)
+  const known = amountsIn(ctx.knownText)
+  const unknown = [...amountsIn(result.body)].filter((a) => !known.has(a))
+  if (unknown.length) {
+    flags.add("unverified_price")
+    flags.add("needs_human")
+  }
+  const hideoutTaken = /Hideout is NOT available this day/.test(ctx.calendarBlock)
+  const teaGardenSetMenu =
+    /tea garden/i.test(result.body) && /set (brunch|lunch|menu)|family[- ]style lunch/i.test(result.body)
+  if (!hideoutTaken && (/\$79\b/.test(result.body) || teaGardenSetMenu)) {
+    flags.add("check_package_matches_space")
+    flags.add("needs_human")
+  }
+  if (claimsAvailability(result.body)) {
+    flags.add("check_calendar_before_sending")
+    flags.add("needs_human")
+  }
+  return { ...result, flags: [...flags] }
+}
+
 export async function draft(req: DraftRequest): Promise<DraftResult> {
   const system = SYSTEM_BASE + (await loadHouseNotesBlock()) + renderPlaybook(req.playbook)
+  const calDates = await calendarDatesFor(req)
+  const calendarBlock = calDates.length
+    ? await availabilityBlock(calDates, customerNamesFrom(req))
+    : ""
   const user =
     `Reply to the latest message in this thread.` +
     (req.customerName ? ` Customer first name: ${req.customerName}.` : "") +
@@ -173,7 +255,8 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
     // "this weekend". The model previously had no date awareness at all.
     ` Today is ${todayLineBrisbane()} (Brisbane). Only use a relative day word ("today", "tomorrow", "this Saturday") if it is genuinely correct relative to today; otherwise name the date plainly or stay general.` +
     `\n\nThread (oldest first):\n\n` +
-    renderThread(req.threadHistory)
+    renderThread(req.threadHistory) +
+    (calendarBlock ? `\n\n${calendarBlock}` : "")
   const r = await anthropic().messages.create({
     model: MODEL,
     max_tokens: 1024,
@@ -193,7 +276,11 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
   if (!block || block.type !== "text") {
     return { body: "", confidence: 0, flags: ["needs_human", "no_output"] }
   }
-  return parseJson(block.text)
+  return guardDraft(parseJson(block.text), {
+    knownText:
+      system + "\n" + user + "\n" + (req.customExtras ?? []).map((e) => e.content).join("\n"),
+    calendarBlock,
+  })
 }
 
 // Post-process to strip AI tells the model snuck through despite the prompt.

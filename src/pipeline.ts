@@ -34,7 +34,8 @@ import {
   type ParsedThread,
   type ParsedMessage,
 } from "./google/gmail.js"
-import { isSlotFree, createEvent, eventsOnDate, upsertReminderEvent, type Venue } from "./google/calendar.js"
+import { isSlotFree, createEvent, upsertReminderEvent, type Venue } from "./google/calendar.js"
+import { datesToCheck } from "./availability.js"
 import { driveReady, uploadInvoicePdf } from "./google/drive.js"
 import {
   fetchCustomerHistory,
@@ -3128,26 +3129,12 @@ async function handleFunctionEnquiry(
     : extracted.date_range_start && extracted.date_range_end
       ? `Customer's date range: ${extracted.date_range_start} to ${extracted.date_range_end}${extracted.weekends_only ? " (weekends only)" : ""}${reqTime ? `, around ${reqTime}` : ""}`
       : "Date: not specified yet"
-  // Check the team's real calendars (incl. all-day function entries) for the
-  // customer's requested date so the agent answers accurately instead of
-  // guessing. A human still confirms before sending.
-  let calBlock = ""
-  const checkDate = extracted.preferred_date ?? extracted.date_range_start
-  if (checkDate) {
-    try {
-      const onDay = await eventsOnDate(checkDate)
-      calBlock = onDay.length
-        ? `\nWhat's ALREADY booked on ${checkDate} (from our team's calendar — internal, don't name other customers):\n` +
-          onDay.map((e) => `  • ${e.timeLabel}: ${e.summary}`).join("\n") +
-          `\nUse this: if their requested time clashes with one of these (or there's an all-day function on), gently tell them that time/day is already taken and ask for an alternative. If the day looks clear, you can say it looks available (a teammate will still confirm).\n`
-        : `\nOur team's calendar shows NOTHING booked on ${checkDate} so far — the day looks open (a teammate will still confirm).\n`
-    } catch {
-      /* calendar unavailable — fall back to asking, never assert */
-    }
-  }
+  // The calendar check now lives in the drafter (src/availability.ts) so every
+  // draft path gets it. It covers EVERY date the customer named, and it only
+  // ever reports a space as taken, never as free.
+  const calendarDates = datesToCheck(extracted)
   const slotsBlock =
-    "(Don't invent fixed time slots. Use the calendar info below + the customer's requested time.)" +
-    calBlock
+    "(Don't invent time slots. Use the Calendar check below and the customer's own requested time.)"
   const nbiContext = ""
   const teaGardenCaveat = ""
   const wideRangeNote = ""
@@ -3179,25 +3166,11 @@ async function handleFunctionEnquiry(
     )
   }
 
-  // No-slots handling is venue-aware. Tea Garden is a shared cafe/garden that
-  // seats many groups at once — we ACCOMMODATE group bookings, never decline
-  // for "availability". Beach House (Hideout) is exclusive, so a clash there
-  // does mean we ask for another date.
-  const noSlotsRule =
-    venue === "tea_garden"
-      ? "DO NOT tell them we have no availability — we can host this group. Warmly confirm we'd love to have them on the date and time they asked for. If it's a group dining/table booking of 12 or more on any day EXCEPT Monday to Thursday (so Friday, Saturday or Sunday), a set menu is required: point them to our set menu packages (Set Brunch $45pp or Set Lunch $65pp, details in the attached functions pack), lay out the two options and ask which suits them best — and DON'T mention a deposit for a table booking. Ask for final numbers and any dietaries to lock it in. Write it as confirmed (a teammate does a final floor-layout check for the group size; no caveats to the customer)."
-      : "We don't have the Hideout free on the date(s) they gave. Apologise briefly and ask for an alternative date window, don't make them spell out the same dates again."
-  // Keep noSlotsRule referenced (Tea Garden accommodation phrasing) without
-  // it claiming specific availability.
-  void noSlotsRule
-
   const draftingRules =
-    `Availability: use the "What's already booked" calendar info above (our team's real calendar). Respond ACCURATELY:\n` +
-    `- If their requested date/time clashes with an existing booking (or an all-day function), DON'T offer that time — gently say it's already taken and ask for an alternative.\n` +
-    `- If the day looks clear, you can warmly confirm it looks available for their requested time (a teammate still does a final confirm).\n` +
-    `- Don't invent a list of fixed time slots. Work from the customer's requested time; if they gave none, ask what time they're thinking. If they gave no date, ask for one.\n` +
-    `- For a Tea Garden GROUP DINING (table) booking, say we'd love to have them and we're flexible on timing within opening hours.\n` +
-    `- Ask for final numbers and any dietaries.\n` +
+    `Follow the Calendar check rules exactly. Never say their date or time is available or looks open.\n` +
+    `- If a space they want is taken or held on their date, say so and offer what we can do instead.\n` +
+    `- If they gave no date, ask for one. If they gave no time, ask what time they are thinking.\n` +
+    `- This email was routed as a ${venue === "tea_garden" ? "Tea Garden" : "Beach House"} enquiry, but that is only a guess: decide the space from what the customer asked for, and only offer packages listed under that space in PACKAGES BY SPACE.\n` +
     `- ALWAYS add "needs_human" to flags so a teammate confirms availability before this sends.` +
     (guardNotes.length ? "\nGuards:\n- " + guardNotes.join("\n- ") : "")
 
@@ -3206,6 +3179,7 @@ async function handleFunctionEnquiry(
     playbook,
     threadHistory: thread.messages.map(toHistoryItem),
     customerName: customerName ?? undefined,
+    calendarDates,
     customExtras: [
       ...(historyBlock
         ? [{ role: "user" as const, content: historyBlock }]
@@ -3222,7 +3196,7 @@ async function handleFunctionEnquiry(
           `${dateBlock}\n` +
           `Slots:\n${slotsBlock}\n` +
           nbiContext +
-          `Deposit rule: a $${FUNCTION_DEPOSIT_AUD} deposit applies ONLY to EXCLUSIVE PRIVATE HIRE (whole-venue hire, or a private styled function like a baby shower / hens in the Hideout). A group that just wants a TABLE for breakfast / brunch / lunch (even 15+ people) is a normal dining booking — NO deposit, do not mention one; just confirm the table, the set menu for tables of 12 or more (Set Brunch $45pp or Set Lunch $65pp; required Friday to Sunday, not needed Monday to Thursday), and take their final numbers and dietaries. Judge which this is from what the customer actually asked for; when unsure, treat it as a table booking and don't raise a deposit.\n` +
+          `Deposit rule: a deposit applies ONLY to EXCLUSIVE PRIVATE HIRE (the Hideout, a private Tea Garden section, or whole-venue hire). A group that just wants a TABLE for breakfast / brunch / lunch (even 15+ people) is a normal dining booking: NO deposit, do not mention one. When unsure, treat it as a table booking and don't raise a deposit.\n` +
           `\nDrafting rule: ${draftingRules}\n`,
       },
     ],

@@ -7,6 +7,9 @@ export interface BookingExtraction {
   date_range_end: string | null // YYYY-MM-DD — latest day they'd accept
   weekends_only: boolean // true if they specifically asked for a weekend
   preferred_time: string | null // HH:MM 24h
+  // Every distinct date the customer is asking about or has booked, so each
+  // one gets a calendar check (not just the first).
+  dates_mentioned: string[]
   duration_hours: number | null
   customer_name: string | null
   notes: string | null
@@ -22,6 +25,7 @@ const SYSTEM = `You read function/event enquiry emails for a Queensland hospital
   "date_range_end": "<YYYY-MM-DD|null>",
   "weekends_only": <true|false>,
   "preferred_time": "<HH:MM|null>",
+  "dates_mentioned": ["<YYYY-MM-DD>", ...],
   "duration_hours": <number|null>,
   "customer_name": "<string|null>",
   "notes": "<short summary string|null>",
@@ -42,6 +46,10 @@ Rules:
   against the TODAY line at the top of the message. Resolved dates must be
   today or in the FUTURE — if a stated date has already passed, leave the date
   fields null and mention it in notes.
+- dates_mentioned: EVERY distinct future date still in play in the conversation
+  (each alternative the customer offered, a date they are asking to move to,
+  the date of their existing booking). Use the LATEST state of the thread and
+  drop dates that have been ruled out. Max 6. Empty array if none.
 - Times in 24h. If only "lunch" / "dinner" mentioned, leave null.
 - Customer name: their first name if extractable.`
 
@@ -66,7 +74,7 @@ export async function extractBooking(
   const today = todayBrisbane()
   const r = await anthropic().messages.create({
     model: MODEL,
-    max_tokens: 400,
+    max_tokens: 500,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
     messages: [
       {
@@ -92,6 +100,7 @@ function empty(): BookingExtraction {
     date_range_end: null,
     weekends_only: false,
     preferred_time: null,
+    dates_mentioned: [],
     duration_hours: null,
     customer_name: null,
     notes: null,
@@ -115,6 +124,11 @@ function parse(text: string): BookingExtraction {
       weekends_only: obj.weekends_only === true,
       preferred_time:
         typeof obj.preferred_time === "string" ? obj.preferred_time : null,
+      dates_mentioned: Array.isArray(obj.dates_mentioned)
+        ? obj.dates_mentioned
+            .filter((d): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d))
+            .slice(0, 6)
+        : [],
       duration_hours:
         typeof obj.duration_hours === "number" ? obj.duration_hours : null,
       customer_name:
