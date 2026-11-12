@@ -43,7 +43,12 @@ export function xero(): XeroClient {
 }
 
 export async function xeroAuthUrl(): Promise<string> {
-  return xero().buildConsentUrl()
+  // Always show Xero's consent and company picker. On 12 Nov 2026 a re-consent
+  // refused at the app's connection limit was replayed straight back as
+  // "TenantConsent status DENIED" with no screen at all.
+  const url = new URL(await xero().buildConsentUrl())
+  url.searchParams.set("prompt", "consent")
+  return url.toString()
 }
 
 export async function exchangeXeroCallback(fullUrl: string): Promise<void> {
