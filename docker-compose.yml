@@ -53,6 +53,10 @@ services:
       # Writable so scripts/download-pack.js can save fetched files here.
       # Pipeline.ts only reads; nothing in the live request path writes.
       - ./attachments:/app/attachments
+      # CBK bookkeeping scripts (Xero reads, the writer's cbk_run.mjs) live on
+      # the host in /root/xero-scripts, so a deploy no longer wipes them.
+      # Read only. Run them as: node /app/dist/scripts/cbk/<script>.mjs
+      - ${CBK_SCRIPTS_DIR:-/root/xero-scripts}:/app/dist/scripts/cbk:ro
     networks:
       # Joins TK's docker network so TK's Caddy can reverse-proxy here
       # (Caddy routes inbox.tarte.com.au -> inbox:8787) and so we can
