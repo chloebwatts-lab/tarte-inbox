@@ -12,7 +12,9 @@
 // a price, change it here and nowhere else.
 
 /** Restaurant set menus (functions pack, "The Restaurant - Shared Dining Room"). */
-export const RESTAURANT_SET_BRUNCH = 45
+// Chloe confirmed $55 on 12 Nov 2026 (the functions pack PDF still prints $45
+// until it is reissued).
+export const RESTAURANT_SET_BRUNCH = 55
 export const RESTAURANT_SET_LUNCH = 65
 /** Hideout packages (functions pack, "The Hideout - Private Room"). */
 export const HIDEOUT_HIGH_TEA = 89
@@ -28,7 +30,7 @@ export const TG_SET_MENU_DISCOUNT = 5
 // the brunch without a figure and a teammate adds the price. To switch it on,
 // set TG_SET_BRUNCH_CONFIRMED to true (and fix RESTAURANT_SET_BRUNCH if it
 // really is $55).
-export const TG_SET_BRUNCH_CONFIRMED: boolean = false
+export const TG_SET_BRUNCH_CONFIRMED: boolean = true
 export const TG_SET_BRUNCH = RESTAURANT_SET_BRUNCH - TG_SET_MENU_DISCOUNT
 const TG_BRUNCH_LINE = TG_SET_BRUNCH_CONFIRMED
   ? `$${TG_SET_BRUNCH}pp`
