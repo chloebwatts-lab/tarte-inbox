@@ -235,6 +235,12 @@ export function guardDraft(
     flags.add("check_package_matches_space")
     flags.add("needs_human")
   }
+  // Hideout booked on a date they asked about, but the draft never offered the
+  // Tea Garden alternative: tell the teammate so it is not missed.
+  if (hideoutTaken && !/\$(79|60|50)\b/.test(result.body)) {
+    flags.add("offer_tea_garden_alternative")
+    flags.add("needs_human")
+  }
   if (claimsAvailability(result.body)) {
     flags.add("check_calendar_before_sending")
     flags.add("needs_human")
