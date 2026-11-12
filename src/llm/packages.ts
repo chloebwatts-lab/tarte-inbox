@@ -32,7 +32,7 @@ export const TG_SET_BRUNCH_CONFIRMED: boolean = false
 export const TG_SET_BRUNCH = RESTAURANT_SET_BRUNCH - TG_SET_MENU_DISCOUNT
 const TG_BRUNCH_LINE = TG_SET_BRUNCH_CONFIRMED
   ? `$${TG_SET_BRUNCH}pp`
-  : `(price being confirmed: offer it by name with NO dollar figure, say a teammate will confirm the brunch price, and add "needs_human")`
+  : `(price being confirmed: you may mention that a set brunch is also possible in the Tea Garden, with NO dollar figure, and say we will confirm the brunch price)`
 export const TG_SET_LUNCH = RESTAURANT_SET_LUNCH - TG_SET_MENU_DISCOUNT
 export const TG_FAMILY_LUNCH = 79
 
@@ -50,7 +50,7 @@ The category label on this email is only a routing guess. Work out which space t
 
 2. THE HIDEOUT (private function room at the Beach House, exclusive use, 3 hours including set up, minimum 12, up to 32 seated).
    - Hideout High Tea $${HIDEOUT_HIGH_TEA}pp (start 10am to 2pm)
-   - Hideout Family Style Lunch $${HIDEOUT_FAMILY_LUNCH}pp (start 11am to 2pm). Optional add-ons: charcuterie starter +$10pp, steak and frites +$22pp. Kids family style lunch $45 per child.
+   - Hideout Family Style Lunch $${HIDEOUT_FAMILY_LUNCH}pp (start 11am to 2pm). Optional add-ons: charcuterie starter +$10pp, steak and frites +$22pp. Children on the Family Style Lunch only: kids lunch $45 per child (there is no kids price for the Hideout High Tea).
    - Unlimited drinks package +$30pp (all guests must take it), otherwise drinks on a tab.
    - Fewer than 12 guests can still book by covering the cost of 12.
    - Deposit: 50% of the package secures the date ($500 save-the-date if numbers or package are not final yet).

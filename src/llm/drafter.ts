@@ -286,6 +286,10 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
 // Post-process to strip AI tells the model snuck through despite the prompt.
 function debot(body: string): string {
   const cleaned = body
+    // Internal flag names must never reach a customer.
+    .replace(/\s*\(?\b(needs_human|needs_floor_layout_check|mentions_deposit|redirect_to_nbi)\b\)?/g, "")
+    // A dash between numbers is a range ("10–15 guests"), not a clause break.
+    .replace(/(\d)\s*[—–]\s*(\d)/g, "$1-$2")
     // em-dash / en-dash → comma, collapsing any spaces that surrounded the
     // dash so we never get "word ,  word". Skip when the dash is at the
     // start of a line (signature separators, bullets).
