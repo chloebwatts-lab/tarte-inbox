@@ -9,12 +9,19 @@
  *   POST /find    ACCPAY bills of one org with one invoice number
  *   POST /create  ONE bill, which must be ACCPAY + DRAFT, on an existing
  *                 ACTIVE contact, with no InvoiceID (never an update)
- *   POST /attach  a PDF onto a bill (needs the accounting.attachments grant)
+ *   POST /attach  a PDF onto one of Kitchen's DRAFT bills with no file yet
+ *   POST /attach-existing
+ *                 a PDF onto an existing ACCPAY bill (DRAFT, SUBMITTED,
+ *                 AUTHORISED or PAID) that has no file yet, only when the
+ *                 bill's contact, number and total are exactly what Kitchen
+ *                 matched (coordinator 13 Nov 2026: PDFs for hand-keyed bills)
  *   POST /sales   READ ONLY: the org's revenue accounts and its ACCREC
  *                 invoices dated in a window (Kitchen counts event invoices,
  *                 dated the event day, in the wage % revenue; Chloe 12 Nov
  *                 2026: "all revenue ... uber bopple and events from Xero")
  *   GET  /status  whether the attachments grant is in, which orgs are linked
+ * Both attach calls need the accounting.attachments grant and only ever PUT
+ * one attachment: never a status, amount or contact change.
  * Anything else is refused. It never authorises, pays, voids, deletes or
  * creates a contact.
  *
@@ -123,6 +130,7 @@ function liteBill(b: Record<string, any>) {
     DueDate: dateOnly(b.DueDateString),
     Total: b.Total,
     Url: b.Url ?? undefined,
+    HasAttachments: b.HasAttachments === true,
     LineItems: (b.LineItems ?? []).map((l: Record<string, any>) => ({
       AccountCode: l.AccountCode,
       TaxType: l.TaxType,
@@ -318,10 +326,50 @@ kitchenBillsApp.post("/create", async (c) => {
   }
 })
 
-kitchenBillsApp.post("/attach", async (c) => {
-  const { org, invoiceId, filename, contentBase64 } = (await c.req.json().catch(() => ({}))) as Record<string, string | undefined>
+/** Statuses a PDF may be added to on an existing bill (never VOIDED or DELETED). */
+const ATTACHABLE = new Set(["DRAFT", "SUBMITTED", "AUTHORISED", "PAID"])
+
+export interface AttachExpect {
+  contactId: string
+  invoiceNumber: string
+  total: number
+}
+
+/**
+ * Why a PDF must not go onto this bill, or null when it may. `expect` is what
+ * Kitchen matched (contact, number and total, all exact); `draftOnly` is the
+ * nightly path, which only ever attaches to the draft it has just created.
+ */
+export function refuseAttach(inv: Record<string, any> | undefined, opts: { draftOnly: boolean; expect?: AttachExpect }): string | null {
+  if (!inv?.InvoiceID) return "no such bill in this org"
+  if (inv.Type !== "ACCPAY") return "not a bill (ACCPAY)"
+  if (opts.draftOnly ? inv.Status !== "DRAFT" : !ATTACHABLE.has(inv.Status)) return `bill is ${inv.Status}`
+  if (inv.HasAttachments === true) return "bill already has a file attached"
+  const e = opts.expect
+  if (e) {
+    if (inv.Contact?.ContactID !== e.contactId) return "contact is not the one matched"
+    if ((inv.InvoiceNumber ?? "") !== e.invoiceNumber) return "invoice number is not the one matched"
+    if (typeof inv.Total !== "number" || Math.round(inv.Total * 100) !== Math.round(e.total * 100)) return "total is not the one matched"
+  }
+  return null
+}
+
+/** Shared by both attach calls: the grant, a real PDF, the bill checks, one PUT. */
+async function attachOne(c: any, opts: { draftOnly: boolean }) {
+  const { org, invoiceId, filename, contentBase64, expect } = (await c.req.json().catch(() => ({}))) as {
+    org?: string
+    invoiceId?: string
+    filename?: string
+    contentBase64?: string
+    expect?: AttachExpect
+  }
   if (!org || !ORGS[org] || !GUID.test(invoiceId ?? "") || !/^[A-Za-z0-9 ._-]{1,120}\.pdf$/i.test(filename ?? "") || !contentBase64)
     return c.json({ ok: false, error: "org, invoiceId, filename (.pdf) and contentBase64 required" }, 400)
+  if (
+    !opts.draftOnly &&
+    (!expect || !GUID.test(expect.contactId ?? "") || typeof expect.invoiceNumber !== "string" || !expect.invoiceNumber.trim() || typeof expect.total !== "number" || !Number.isFinite(expect.total))
+  )
+    return c.json({ ok: false, error: "expect { contactId, invoiceNumber, total } required" }, 400)
   const stored = await getTokens("xero")
   if (!(stored?.scope ?? "").split(/\s+/).includes("accounting.attachments"))
     return c.json({ ok: false, reason: "scope", error: "Xero has not granted accounting.attachments yet (one re-consent at /oauth/xero/start)" }, 200)
@@ -329,9 +377,15 @@ kitchenBillsApp.post("/attach", async (c) => {
   if (!body.length || body.length > 10 * 1024 * 1024) return c.json({ ok: false, error: "PDF must be under 10 MB" }, 400)
   if (body.subarray(0, 5).toString("latin1") !== "%PDF-") return c.json({ ok: false, error: "not a PDF" }, 400)
   try {
+    const j = (await xeroCall(org, "GET", `/Invoices/${invoiceId}`)) as { Invoices?: Record<string, any>[] }
+    const why = refuseAttach(j.Invoices?.[0], { draftOnly: opts.draftOnly, expect: opts.draftOnly ? undefined : expect })
+    if (why) return c.json({ ok: false, refused: true, error: `refused: ${why}` }, 409)
     await xeroCall(org, "PUT", `/Invoices/${invoiceId}/Attachments/${encodeURIComponent(filename!)}`, { body, contentType: "application/pdf" })
     return c.json({ ok: true })
   } catch (e) {
     return fail(c, e)
   }
-})
+}
+
+kitchenBillsApp.post("/attach", (c) => attachOne(c, { draftOnly: true }))
+kitchenBillsApp.post("/attach-existing", (c) => attachOne(c, { draftOnly: false }))
