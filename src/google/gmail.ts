@@ -450,12 +450,26 @@ export async function deleteDraft(draftId: string): Promise<void> {
  * a replacement draft or auto-sending, so superseded drafts (including ones
  * whose ids we lost track of) don't pile up for staff.
  */
+/** Every draft in the mailbox, all pages. drafts.list returns at most one
+ * page (100 here); hello@ held 172 drafts on 18 Nov 2026, so drafts past the
+ * first page were never found, never swept, and piled up as duplicates. */
+async function listAllDrafts(g: gmail_v1.Gmail): Promise<gmail_v1.Schema$Draft[]> {
+  const out: gmail_v1.Schema$Draft[] = []
+  let pageToken: string | undefined
+  do {
+    const r = await g.users.drafts.list({ userId: "me", maxResults: 500, pageToken })
+    out.push(...(r.data.drafts ?? []))
+    pageToken = r.data.nextPageToken ?? undefined
+  } while (pageToken && out.length < 5000)
+  return out
+}
+
 export async function deleteThreadDrafts(threadId: string): Promise<number> {
   try {
     const g = await gmail()
-    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
+    const all = await listAllDrafts(g)
     let deleted = 0
-    for (const d of r.data.drafts ?? []) {
+    for (const d of all) {
       if (d.message?.threadId === threadId && d.id) {
         await deleteDraft(d.id)
         deleted++
@@ -478,8 +492,8 @@ export async function deleteThreadDrafts(threadId: string): Promise<number> {
 export async function getThreadDraftBody(threadId: string): Promise<string | null> {
   try {
     const g = await gmail()
-    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
-    const candidates = (r.data.drafts ?? []).filter((d) => d.message?.threadId === threadId && d.id)
+    const all = await listAllDrafts(g)
+    const candidates = all.filter((d) => d.message?.threadId === threadId && d.id)
     for (const d of candidates) {
       const full = await g.users.drafts.get({ userId: "me", id: d.id!, format: "full" })
       // Skip our own internal note drafts (addressed to the mailbox itself) —
@@ -513,9 +527,9 @@ function isOurNoteMessage(msg: gmail_v1.Schema$Message | undefined): boolean {
 export async function deleteOurNoteDrafts(threadId: string): Promise<number> {
   try {
     const g = await gmail()
-    const r = await g.users.drafts.list({ userId: "me", maxResults: 100 })
+    const all = await listAllDrafts(g)
     let deleted = 0
-    for (const d of r.data.drafts ?? []) {
+    for (const d of all) {
       if (d.message?.threadId !== threadId || !d.id) continue
       const meta = await g.users.drafts.get({ userId: "me", id: d.id, format: "metadata" })
       if (isOurNoteMessage(meta.data.message)) {

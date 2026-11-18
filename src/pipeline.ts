@@ -73,7 +73,7 @@ import {
   CATEGORY_LABELS,
   type Category,
 } from "./llm/classifier.js"
-import { draft, type DraftResult } from "./llm/drafter.js"
+import { CHECK_FLAG, draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
 import { dequote } from "./lib/dequote.js"
@@ -146,6 +146,21 @@ export const TAKEAWAY_HT_LABEL = "Tarte / Takeaway High Tea"
 // Table bookings of 12+ guests — foldered so staff can eyeball every large
 // group at a glance (these need a set menu Fri-Sun).
 export const LARGE_BOOKING_LABEL = "Tarte / 12+ booking"
+// The fact-checker (18 Nov 2026) could not answer something the customer
+// asked, or could not run: a teammate must fill the gap before sending. The
+// questions are in meta.openQuestions, the digest and the /queue page.
+export const CHECK_LABEL = "Tarte / Check before sending"
+
+/** Keep the check label in step with the newest draft on a thread. */
+async function syncCheckLabel(threadId: string, d: DraftResult): Promise<void> {
+  if (d.flags.includes(CHECK_FLAG)) await applyLabel(threadId, CHECK_LABEL).catch(() => {})
+  else await removeLabel(threadId, CHECK_LABEL).catch(() => {})
+}
+
+/** The fact-checker's findings, stored on the thread for the digest/queue. */
+function checkMeta(d: DraftResult): Record<string, unknown> {
+  return { checkNotes: d.checkNotes ?? [], openQuestions: d.openQuestions ?? [], bookingTasks: d.bookingTasks ?? [] }
+}
 
 // Only archive LLM-classified noise when the classifier is sure. Regex-matched
 // noreply receipts archive unconditionally.
@@ -681,6 +696,7 @@ export async function reassertDraftUnread(): Promise<number> {
           [r.thread_id]
         )
         await removeLabel(r.thread_id, ACTION_LABEL).catch(() => {})
+        await removeLabel(r.thread_id, CHECK_LABEL).catch(() => {})
         replied++
         continue
       }
@@ -1080,6 +1096,7 @@ async function handleFormSubmission(
     formAttachments
   )
   await applyLabel(thread.threadId, ACTION_LABEL)
+  await syncCheckLabel(thread.threadId, d)
   await upsertThread({
     thread_id: thread.threadId,
     last_message_id: latest.id,
@@ -1094,6 +1111,7 @@ async function handleFormSubmission(
       draftBody: d.body,
       draftedAt: new Date().toISOString(),
       flags: d.flags,
+      ...checkMeta(d),
       attachmentCount: formAttachments.length,
     },
   })
@@ -1148,6 +1166,7 @@ export async function processThread(
     }
     // Staff replied — their action item is done, clear the flag.
     await removeLabel(threadId, ACTION_LABEL).catch(() => {})
+    await removeLabel(threadId, CHECK_LABEL).catch(() => {})
     await upsertThread({
       thread_id: threadId,
       last_message_id: latest.id,
@@ -1716,6 +1735,7 @@ async function deliver(
     attachments
   )
   await applyLabel(thread.threadId, ACTION_LABEL)
+  await syncCheckLabel(thread.threadId, d)
   if (opts.invoiceCreated) await applyLabel(thread.threadId, INVOICE_CREATED_LABEL).catch(() => {})
   // Keep the thread UNREAD so the pending draft surfaces for staff (bold + in
   // the unread count) rather than being read past.
@@ -1732,6 +1752,7 @@ async function deliver(
       draftBody: d.body,
       draftConfidence: d.confidence,
       flags: d.flags,
+      ...checkMeta(d),
       category,
       attachmentCount: attachments.length,
     },

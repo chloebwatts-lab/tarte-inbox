@@ -1,9 +1,12 @@
-import { anthropic, MODEL } from "./client.js"
+import type Anthropic from "@anthropic-ai/sdk"
+import { anthropic, DRAFT_MODEL, MODEL } from "./client.js"
 import { listActiveHouseNotes, type Playbook } from "../db/queries.js"
 import type { Category } from "./classifier.js"
 import { PACKAGES_BLOCK, amountsIn } from "./packages.js"
 import { extractBooking } from "./booking.js"
 import { availabilityBlock, claimsAvailability, datesToCheck } from "../availability.js"
+import { confirmedKnowledgeText, loadKnowledge, recordKnowledgeGaps, renderKnowledge } from "./knowledge.js"
+import { factCheck } from "./factcheck.js"
 
 export interface DraftRequest {
   category: Category
@@ -15,13 +18,31 @@ export interface DraftRequest {
    * booking-type categories work them out from the thread themselves, so
    * EVERY draft path gets the check, not just new function enquiries. */
   calendarDates?: string[]
+  /** For logging knowledge gaps against the thread. Optional. */
+  threadId?: string
+  /** Read-only runs (replays, evals): skip writing knowledge gaps. */
+  dryRun?: boolean
+  /** Replays only: the day the reply was due, so "today" matches the thread. */
+  today?: Date
 }
 
 export interface DraftResult {
   body: string
   confidence: number
   flags: string[] // e.g. ['needs_floor_layout_check', 'mentions_deposit']
+  /** What the fact-checker corrected or removed, plain English. */
+  checkNotes?: string[]
+  /** What a teammate must answer before sending. */
+  openQuestions?: string[]
+  /** Routine booking-system jobs to do when sending. */
+  bookingTasks?: string[]
+  /** The calendar check the drafter was given (evals show it to the judge). */
+  calendarBlock?: string
 }
+
+/** Flag on a draft a teammate must look at before sending (fact-checker had
+ * open questions, or the check could not run). Shown as a Gmail label. */
+export const CHECK_FLAG = "check_before_sending"
 
 // Facts that apply across every category. Playbook FAQ entries can add to
 // these but must not contradict them.
@@ -29,13 +50,15 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - Tarte sells CRULLERS, not churros. Never write "churro".
 - DINNER & EVENINGS: we are NOT open for dinner and do NOT offer evening events or functions yet — EVERYTHING is daytime, including private functions. If a customer asks about dinner, evening dining, or an evening event, answer with a friendly variation of "not yet, but watch this space" — upbeat, no apology, no promised date — then pivot to daytime options. NEVER propose or agree to a start time after mid-afternoon.
 - DATES: when booking info lists proposed slots, copy the weekday/date/time labels exactly as given. Never compute a weekday yourself.
-- GROUP DINING (a TABLE booking) vs PRIVATE HIRE (a function): a group that just wants a TABLE for breakfast / brunch / lunch is a normal dining booking — we love groups and rarely turn one away. DEFAULT to "yes, we'd love to host you", never claim no availability just because other bookings exist (the restaurant, Tea Garden and cafe seat many groups at once). A table booking does NOT need a deposit and is NOT a function — never mention a deposit or packages for it.
+- GROUP DINING (a TABLE booking) vs PRIVATE HIRE (a function): a group that just wants a TABLE for breakfast / brunch / lunch is a normal dining booking — we love groups and rarely turn one away. DEFAULT to "yes, we'd love to host you", never claim no availability just because other bookings exist (the restaurant, Tea Garden and cafe seat many groups at once). A table booking does NOT need a deposit payment and is NOT a function: never ask for a deposit or mention packages for it. (Separate thing: a booking the team enters for a customer is secured by a card pre-authorisation in the booking confirmation email. See HOLDING DEPOSIT / PRE-AUTH.)
   - RESTAURANT SET MENUS: tables of 12 to 16 in the restaurant need a set menu Friday to Sunday (prices and rules in PACKAGES BY SPACE, section 1). They are for the RESTAURANT. Do not offer them to a Tea Garden or Hideout enquiry unless section 4 applies. Name the two options with their prices in one line each and point to the attached functions pack for what is included. Do NOT type out the dishes. If the customer has not given a date, time or numbers yet, ask for those first and leave the menus for the next email.
   - A DEPOSIT (50%) and event packages only apply to EXCLUSIVE PRIVATE HIRE — whole-venue hire, or a private styled function (baby shower / hens) in the Hideout or a private Tea Garden section. Only raise a deposit when the customer actually wants exclusive/private hire.
 - LARGE GROUPS (30-60+): NEVER make it sound difficult or say we have no options. Be warm and can-do. Recommend TEA GARDEN WHOLE-VENUE HIRE and point them to the attached functions pack. If they ask what it costs, the hire fee and the per person package are BOTH payable (PACKAGES BY SPACE, section 3).
 - OFFER ALTERNATIVES: don't steer a customer to a single option. Where it fits, also mention a relevant alternative (e.g. a group brunch enquiry — also offer high tea) and let them choose. Don't sway to one decision unless it's genuinely the only fit.
 - AMBIGUOUS / MISSING YEAR: if a date is given without a year (e.g. "Saturday 5th", "in August"), ASK which year up front before quoting availability — don't assume, or your availability answer will be wrong.
 - PAST DATES: if the date they gave has already passed, assume it's a slip (likely a later month). Gently flag it and ASK them to confirm the date, rather than assuming a month and telling them it's unavailable.
+- YOUR OWN HOLDS: if the thread shows we already placed a hold or booking for THIS customer on a date (e.g. "I've put a tentative hold on the Hideout for you"), a TAKEN or HELD calendar entry on that date is almost certainly theirs. Never tell them the space is booked or steer them elsewhere because of it; carry on with their booking and add "needs_human" so a teammate confirms the entry is theirs.
+- INTERNAL PROCESS: the customer only ever sees the finished email. Never mention that a teammate will review, check or confirm "before this goes out", and never mention flags, drafts, systems, labels or how we work behind the scenes.
 - AVAILABILITY: you cannot see the booking system. Never tell a customer a date or time is available, open or free, and never say a NEW booking has been made (a teammate does that). Only say a space is taken when a "Calendar check" below tells you so. Otherwise offer to check availability and get it booked in.
 - GROUPS OVER 12 CANNOT BOOK ONLINE: the website only takes bookings of up to 12 guests, in the restaurant and the Tea Garden. Never send a group of 13 or more to the website to book. Ask for whatever is missing (date, time, numbers) and say we will check availability and book it in for them.
 - SEATING REQUESTS (outdoor, verandah, window, a particular table or view): say we will note the preference but specific tables cannot be guaranteed. Never promise one, and never describe how busy or quiet a day will be.
@@ -58,14 +81,22 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - BREVITY: write like a busy cafe manager — answer what was asked, one warm line, sign off. Don't recite the customer's booking details back at them unless they asked you to confirm something specific. Staff consistently shorten wordy drafts; start short instead.
 - FUNCTION ENQUIRIES — KEEP IT SHORT (5 sentences max): warmly say we'd love to host them, name the ONE format that fits (e.g. "whole-venue hire" or "a private section") in a few words, and REFER them to the attached functions pack for packages and pricing. Do NOT write out venue-hire fees, package prices, menus, bond or deposit amounts in a FIRST reply — the pack has all of that; listing them makes the email far too long. Ask for the ONE most important missing detail (date, numbers or which option), not a list of questions. When the customer asks a direct price question, answer it exactly from PACKAGES BY SPACE in one or two lines. Close function replies the way the team does: "Let me know which option you are most interested in and I would be more than happy to check availability and get something booked in for you."
 - HOLDING DEPOSIT / PRE-AUTH: when we secure a booking with a card, make clear it's a PRE-AUTHORISATION — just a temporary hold to secure the date, NO payment is actually taken. Reassure them on this whenever a card-on-file/holding deposit is mentioned. (A deposit INVOICE for a confirmed function is different — that's an actual payment; don't confuse the two.)
+  - TABLE bookings and high teas the team enters in the booking system for a customer (groups, set menus, high teas booked by email) are confirmed by a booking confirmation email whose final step is the card pre-authorisation. Private functions secured by a deposit invoice do not use it: never send a pre-auth reminder for those, or to a customer who has paid their invoice. While that step may still be outstanding, NEVER tell the customer "nothing else is needed", "no card is needed" or that the booking is locked in; remind them to complete the pre-authorisation in their confirmation email. Do not quote the hold amount or the cancellation window unless HOUSE KNOWLEDGE gives them.
 - NEVER state a specific booking date, time, guest count or reference number unless it is given to you in the thread or the booking context. If you don't have it, stay general ("your upcoming booking", "your reservation") — do NOT guess. Inventing a wrong date in a confirmation or cancellation is worse than staying general.
 - PHONE CALLBACKS: if a customer asks to call or for a phone number and you don't have one in the cheat sheet, don't recite a website as "the number". Say we're happy to help right here over email, or ask for their number and a good time and we'll call them.`
 
-const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner): warm, friendly, professional, never gushing. Australian English.
+/** The knowledge system block shared by the drafter and the fact-checker.
+ * Identical text for both, so the prompt cache serves both calls. */
+function factsBlock(knowledge: string): string {
+  return `${BUSINESS_FACTS}\n\n${PACKAGES_BLOCK}${knowledge ? `\n\n${knowledge}` : ""}`
+}
 
-${BUSINESS_FACTS}
+/** The same facts block the drafter uses (for evals and audits). */
+export async function currentFactsBlock(): Promise<string> {
+  return factsBlock(renderKnowledge(await loadKnowledge()))
+}
 
-${PACKAGES_BLOCK}
+const SYSTEM_BASE = `You write email replies on behalf of Tarte, a hospitality business in Queensland, Australia. You write in the voice of Chloe (owner): warm, friendly, professional, never gushing. Australian English. Everything you know about Tarte is in the Business facts, PACKAGES BY SPACE and HOUSE KNOWLEDGE above. A second agent checks every claim in your reply against them, so only say what they support.
 
 Output STRICT JSON only:
 { "body": "<plain text reply>", "confidence": <0..1>, "flags": [<short strings>] }
@@ -77,8 +108,8 @@ Conventions:
 - Warm but brisk. No marketing fluff, no "we appreciate your business".
 - Do NOT use em-dashes (—) or en-dashes (–). They are the most common AI tell. Use a comma, a regular hyphen with spaces (e.g. " - "), a full stop, or a new sentence instead.
 - Avoid other AI tells: "I hope this email finds you well", "delve into", "in essence", "navigate this together", "rest assured". Just say the thing.
-- CONFIDENCE: You ARE a member of the Tarte team. You know the business. NEVER sound unknowledgeable, uncertain, or like you're "checking" on something — that makes Tarte look unprofessional. Phrases like "I can't confirm right now", "I'm just checking on that", "I'll have to get back to you" are FORBIDDEN for any topic. If you don't have the exact detail, give the customer the next-best useful answer (a link, a general statement, what's true 90% of the time) rather than admitting you don't know.
-  - If the answer is in the playbook cheat sheet below, quote it directly.
+- CONFIDENCE: You ARE a member of the Tarte team. Sound sure of what you say. Phrases like "I can't confirm right now", "I'm just checking on that", "I'll have to get back to you" are FORBIDDEN for any topic. But confidence never means guessing: a confident wrong answer is the worst outcome (a draft once told a customer we don't run SUP hire; we do). If a fact is not in your knowledge, leave that part out of the reply entirely, don't state it either way, and add "needs_human" so a teammate fills it in.
+  - If the answer is in HOUSE KNOWLEDGE, quote it directly.
   - If the answer involves prices and they're not in the cheat sheet, point the customer at where prices are shown (the booking page link for high teas/dine-in, the attached functions pack for functions).
   - If the answer is genuinely unknown to you AND there's no useful place to point them, write the body without trying to answer that part, add "needs_human" to flags, and the human reviewing the draft will fill in the answer. Don't pretend to be "just checking on that" — that's a stall.
   - For things like gift vouchers, opening hours, our address, our phone, where to park: if the playbook doesn't have it, just say something like "Best place to find that is on our website tarte.com.au" rather than pretending to chase up the answer.
@@ -102,22 +133,14 @@ function renderPlaybook(p: Playbook | null): string {
         `--- example ${i + 1} ---\nIncoming:\n${ex.incoming}\nReply:\n${ex.reply}`
     )
     .join("\n\n")
-  // FAQ entries with non-empty answers are authoritative facts. Empty answers
-  // are intentionally hidden — they're for human review only, not the agent.
-  const faqEntries = (p.faq ?? []).filter(
-    (f) => f.question?.trim() && f.answer?.trim()
-  )
-  const faqBlock = faqEntries.length
-    ? "Cheat sheet (authoritative facts — quote these directly when relevant):\n" +
-      faqEntries.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join("\n\n")
-    : ""
+  // The playbook's FAQ answers are no longer repeated here: every category's
+  // answers are in HOUSE KNOWLEDGE for every draft (knowledge.ts).
   return [
     `\n--- playbook for category: ${p.category} ---`,
     `Description: ${p.description}`,
     `Voice guidance: ${p.voice_guidance}`,
     p.reply_template ? `Template:\n${p.reply_template}` : "",
-    faqBlock,
-    exBlock ? `Examples of past replies:\n${exBlock}` : "",
+    exBlock ? `Examples of past replies (for tone; if a fact in one clashes with HOUSE KNOWLEDGE or the Business facts, those win):\n${exBlock}` : "",
   ]
     .filter(Boolean)
     .join("\n")
@@ -162,8 +185,7 @@ function renderThread(
     .join("\n\n---\n\n")
 }
 
-function todayLineBrisbane(): string {
-  const now = new Date()
+function todayLineBrisbane(now: Date = new Date()): string {
   const weekday = new Intl.DateTimeFormat("en-AU", {
     timeZone: "Australia/Brisbane",
     weekday: "long",
@@ -248,43 +270,105 @@ export function guardDraft(
   return { ...result, flags: [...flags] }
 }
 
+/** One drafting call. Opus first; if it errors or declines, the previous
+ * model so a customer is never left without a draft. */
+async function callDrafter(
+  system: Anthropic.TextBlockParam[],
+  messages: Anthropic.MessageParam[]
+): Promise<{ text: string | null; model: string }> {
+  const textOf = (m: Anthropic.Message): string | null =>
+    m.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? null
+  try {
+    const r = await anthropic().messages.create({
+      model: DRAFT_MODEL,
+      max_tokens: 16000,
+      output_config: { effort: "high" },
+      system,
+      messages,
+    })
+    const text = r.stop_reason === "refusal" ? null : textOf(r)
+    if (text) return { text, model: DRAFT_MODEL }
+    console.warn(`[drafter] ${DRAFT_MODEL} gave no reply (${r.stop_reason}); using ${MODEL}`)
+  } catch (e) {
+    console.warn(`[drafter] ${DRAFT_MODEL} failed (${e instanceof Error ? e.message : e}); using ${MODEL}`)
+  }
+  const r = await anthropic().messages.create({ model: MODEL, max_tokens: 1024, system, messages })
+  return { text: textOf(r), model: MODEL }
+}
+
 export async function draft(req: DraftRequest): Promise<DraftResult> {
-  const system = SYSTEM_BASE + (await loadHouseNotesBlock()) + renderPlaybook(req.playbook)
+  const knowledgeRows = await loadKnowledge()
+  const facts = factsBlock(renderKnowledge(knowledgeRows))
+  const role = SYSTEM_BASE + (await loadHouseNotesBlock()) + renderPlaybook(req.playbook)
   const calDates = await calendarDatesFor(req)
   const calendarBlock = calDates.length
     ? await availabilityBlock(calDates, customerNamesFrom(req))
     : ""
+  const threadText = renderThread(req.threadHistory)
   const user =
     `Reply to the latest message in this thread.` +
     (req.customerName ? ` Customer first name: ${req.customerName}.` : "") +
     // Anchor relative time words so the draft never invents "tomorrow" /
     // "this weekend". The model previously had no date awareness at all.
-    ` Today is ${todayLineBrisbane()} (Brisbane). Only use a relative day word ("today", "tomorrow", "this Saturday") if it is genuinely correct relative to today; otherwise name the date plainly or stay general.` +
+    ` Today is ${todayLineBrisbane(req.today)} (Brisbane). Only use a relative day word ("today", "tomorrow", "this Saturday") if it is genuinely correct relative to today; otherwise name the date plainly or stay general.` +
     `\n\nThread (oldest first):\n\n` +
-    renderThread(req.threadHistory) +
+    threadText +
     (calendarBlock ? `\n\n${calendarBlock}` : "")
-  const r = await anthropic().messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: [
-      {
-        type: "text",
-        text: system,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    messages: [
-      ...(req.customExtras ?? []),
-      { role: "user", content: user },
-    ],
-  })
-  const block = r.content[0]
-  if (!block || block.type !== "text") {
-    return { body: "", confidence: 0, flags: ["needs_human", "no_output"] }
+  // Two cached blocks: the facts (shared with the fact-checker) then the
+  // drafting instructions for this category.
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: facts, cache_control: { type: "ephemeral" } },
+    { type: "text", text: role, cache_control: { type: "ephemeral" } },
+  ]
+  const { text } = await callDrafter(system, [
+    ...(req.customExtras ?? []),
+    { role: "user", content: user },
+  ])
+  if (!text) return { body: "", confidence: 0, flags: ["needs_human", "no_output"] }
+  let result = parseJson(text)
+
+  // Second agent: check every claim before a human sees the draft.
+  if (result.body) {
+    const extras = (req.customExtras ?? []).map((e) => e.content).join("\n\n")
+    const check = await factCheck({
+      factsBlock: facts,
+      threadText: threadText + (extras ? `\n\n--- context given to the drafter ---\n${extras}` : ""),
+      calendarBlock,
+      draftBody: result.body,
+    })
+    const flags = new Set(result.flags)
+    if (!check.ok) {
+      flags.add("fact_check_failed")
+      flags.add(CHECK_FLAG)
+    } else {
+      flags.add("fact_checked")
+      if (check.changed) {
+        flags.add("fact_fixed")
+        result = { ...result, body: debot(check.body) }
+      }
+      if (check.openQuestions.length) {
+        flags.add(CHECK_FLAG)
+        flags.add("needs_human")
+      }
+      if (check.knowledgeGaps.length && !req.dryRun)
+        await recordKnowledgeGaps(req.threadId, req.category, check.knowledgeGaps)
+    }
+    result = {
+      ...result,
+      flags: [...flags],
+      checkNotes: check.problems,
+      openQuestions: check.openQuestions,
+      bookingTasks: check.bookingTasks,
+      calendarBlock,
+    }
   }
-  return guardDraft(parseJson(block.text), {
+  return guardDraft(result, {
+    // Prices count as known only from the owner's rulings, CONFIRMED rows,
+    // the thread and the drafter's extra context: never DRAFT/CHECK rows.
     knownText:
-      system + "\n" + user + "\n" + (req.customExtras ?? []).map((e) => e.content).join("\n"),
+      SYSTEM_BASE + BUSINESS_FACTS + PACKAGES_BLOCK + "\n" + role + "\n" +
+      confirmedKnowledgeText(knowledgeRows) + "\n" + user + "\n" +
+      (req.customExtras ?? []).map((e) => e.content).join("\n"),
     calendarBlock,
   })
 }

@@ -194,6 +194,42 @@ export async function sendDailyDigest(): Promise<{ sent: boolean }> {
         (await threadLines(urgent.rows)).join("\n")
     )
   }
+
+  // The fact-checker (18 Nov 2026) left these drafts without an answer it
+  // could not verify. Gmail label "Tarte / Check before sending".
+  try {
+    const check = await db().query<ActionThread & { questions: string[] | null }>(
+      `SELECT thread_id, category, state, last_processed_at,
+              ARRAY(SELECT jsonb_array_elements_text(coalesce(meta->'openQuestions', '[]'::jsonb))) AS questions
+         FROM inbox_threads
+        WHERE state IN ('drafted', 'form_drafted')
+          AND meta->'flags' ? 'check_before_sending'
+          AND last_processed_at > now() - interval '7 days'
+        ORDER BY last_processed_at DESC LIMIT 15`
+    )
+    if (check.rows.length) {
+      const lines = await threadLines(check.rows)
+      sections.push(
+        `❓ Check before sending: the draft leaves out something we have no written answer for (${check.rows.length}):\n` +
+          check.rows
+            .map((r, i) => `${lines[i]}${(r.questions ?? []).slice(0, 2).map((q) => `\n    ? ${q}`).join("")}`)
+            .join("\n")
+      )
+    }
+    const gaps = await db().query<{ question: string }>(
+      `SELECT question FROM inbox_knowledge_gaps
+        WHERE resolved_at IS NULL AND created_at > now() - interval '7 days'
+        ORDER BY created_at DESC LIMIT 8`
+    )
+    if (gaps.rows.length) {
+      sections.push(
+        `📚 Questions customers asked that we have no written answer for. Answer each once as a house note and every future email gets it right:\n` +
+          gaps.rows.map((g) => `  • ${g.question}`).join("\n")
+      )
+    }
+  } catch (e) {
+    console.error("[digest] fact-check section failed:", e instanceof Error ? e.message : e)
+  }
   if (drafts.rows.length) {
     sections.push(
       `✍️  Drafts ready — read, tweak if needed, hit send (${drafts.rows.length}):\n` +

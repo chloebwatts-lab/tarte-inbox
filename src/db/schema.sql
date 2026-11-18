@@ -309,3 +309,35 @@ ALTER TABLE inbox_invoices
   ADD COLUMN IF NOT EXISTS draft_id        text,
   ADD COLUMN IF NOT EXISTS draft_thread_id text,
   ADD COLUMN IF NOT EXISTS drafted_at      timestamptz;
+
+-- One knowledge base for every draft (Chloe, 18 Nov 2026). Rows imported from
+-- the staff handover sheets (the Functions knowledge base, the Manager Starter Pack).
+-- The live playbook FAQs stay in inbox_playbooks; knowledge.ts merges both and
+-- puts ALL of it in front of EVERY draft, whatever the email's category (a
+-- donations email once said "we don't do SUP" because the SUP answer only
+-- lived under general_enquiries). status: 'confirmed' | 'draft' | 'check'.
+CREATE TABLE IF NOT EXISTS inbox_knowledge (
+  id          text PRIMARY KEY,
+  source      text NOT NULL,
+  category    text,
+  venue       text,
+  question    text NOT NULL,
+  keywords    text,
+  answer      text NOT NULL,
+  status      text NOT NULL DEFAULT 'draft',
+  active      boolean NOT NULL DEFAULT true,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Questions the fact-checker found a customer asking that no knowledge row
+-- answers. One human answer (a house note or FAQ) fixes it for good.
+CREATE TABLE IF NOT EXISTS inbox_knowledge_gaps (
+  id          bigserial PRIMARY KEY,
+  thread_id   text,
+  category    text,
+  question    text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  resolved_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS inbox_knowledge_gaps_open_idx
+  ON inbox_knowledge_gaps(created_at) WHERE resolved_at IS NULL;
