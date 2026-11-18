@@ -9,13 +9,17 @@
 // actually sent, and one candidate at a time, and lists factual errors:
 // anything that contradicts our knowledge or the team's reply, or a claim
 // about Tarte nothing supports.
-//   node dist/scripts/accuracy-eval.js [count=30] [--ids 12,34]
+// The judge runs on a different, stronger model than the drafter and checker
+// (JUDGE_MODEL, default claude-fable-5-2) so it does not share their blind
+// spots. --skip N leaves out the newest N emails (the set prompts were tuned
+// on) so the score is measured on emails nobody tuned against.
+//   node dist/scripts/accuracy-eval.js [count=30] [--skip 30] [--ids 12,34]
 
 import type Anthropic from "@anthropic-ai/sdk"
 import { db } from "../db/pool.js"
 import { getThread } from "../google/gmail.js"
 import { getPlaybook } from "../db/queries.js"
-import { currentFactsBlock, draft } from "../llm/drafter.js"
+import { autoSendCandidate, currentFactsBlock, draft } from "../llm/drafter.js"
 import { anthropic, DRAFT_MODEL } from "../llm/client.js"
 import { dequote } from "../lib/dequote.js"
 import { config } from "../config.js"
@@ -37,6 +41,8 @@ List every factual error in the candidate:
 - states something about Tarte that nothing in the evidence supports and that could mislead the customer
 Do NOT count: missing details the team had from a phone call or elsewhere, tone, length, a different but true way of answering, an offer to check something.
 send_ready = true only if the candidate could be sent with no factual fix.`
+
+const JUDGE_MODEL = process.env.JUDGE_MODEL || "claude-fable-5-2"
 
 const SCHEMA = {
   type: "object",
@@ -61,7 +67,7 @@ interface Verdict { errors: Array<{ statement: string; why: string }>; send_read
 async function judge(facts: string, threadText: string, sent: string, candidate: string, sentWasOldDraft: boolean): Promise<Verdict | null> {
   try {
     const r = await anthropic().messages.create({
-      model: DRAFT_MODEL,
+      model: JUDGE_MODEL,
       max_tokens: 16000,
       output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
       system: [
@@ -128,6 +134,7 @@ async function evalOne(
   return [
     String(row.id), row.category, String(vo.errors.length), String(vo.send_ready),
     String(vn.errors.length), String(vn.send_ready), String(!!d.openQuestions?.length),
+    String(autoSendCandidate(d)),
   ]
 }
 
@@ -135,7 +142,9 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const idsArg = args.indexOf("--ids")
   const ids = idsArg >= 0 ? args[idsArg + 1]!.split(",").map(Number) : null
-  const count = Number(args.find((a) => /^\d+$/.test(a)) ?? 30)
+  const skipArg = args.indexOf("--skip")
+  const skip = skipArg >= 0 ? Number(args[skipArg + 1]) : 0
+  const count = Number(args.find((a, i) => /^\d+$/.test(a) && args[i - 1] !== "--skip" && args[i - 1] !== "--ids") ?? 30)
   const { rows } = ids
     ? await db().query(
         `SELECT id, thread_id, category, our_draft, sent_reply, noted_at, edit_distance FROM inbox_learnings WHERE id = ANY($1::int[])`,
@@ -149,13 +158,13 @@ async function main(): Promise<void> {
           ORDER BY thread_id, noted_at DESC`,
         [CUSTOMER_CATEGORIES]
       )
-  const pool = ids ? rows : rows.sort((a, b) => +b.noted_at - +a.noted_at).slice(0, count)
-  console.log(`evaluating ${pool.length} past emails`)
+  const pool = ids ? rows : rows.sort((a, b) => +b.noted_at - +a.noted_at).slice(skip, skip + count)
+  console.log(`evaluating ${pool.length} past emails (judge ${JUDGE_MODEL})`)
   const facts = await currentFactsBlock()
   const results: string[][] = []
   const queue = [...pool]
   await Promise.all(
-    Array.from({ length: 4 }, async () => {
+    Array.from({ length: Number(process.env.EVAL_CONCURRENCY || 4) }, async () => {
       for (let row = queue.shift(); row; row = queue.shift()) {
         const r = await evalOne(row, facts).catch((e) => {
           console.error(`#${row!.id}`, e instanceof Error ? e.message : e)
@@ -174,6 +183,20 @@ async function main(): Promise<void> {
   console.log(`NEW drafts with a factual error: ${pct(newWrong)}   send ready: ${pct(results.filter((r) => r[5] === "true").length)}`)
   console.log(`NEW drafts labelled Check before sending: ${pct(results.filter((r) => r[6] === "true").length)}`)
   console.log(`errors total: old ${results.reduce((s, r) => s + Number(r[2]), 0)}, new ${results.reduce((s, r) => s + Number(r[4]), 0)}`)
+  const unflagged = results.filter((r) => r[6] !== "true")
+  console.log(`NEW drafts with NO "Check before sending" label: ${unflagged.length}; of those with a factual error: ${unflagged.filter((r) => Number(r[4]) > 0).length} (this is the risk: staff send these as they are)`)
+  const auto = results.filter((r) => r[7] === "true")
+  console.log(`NEW drafts nothing flagged (could auto-send): ${pct(auto.length)}; of those with a factual error: ${auto.filter((r) => Number(r[4]) > 0).length}/${auto.length}`)
+  const byCat = new Map<string, { n: number; wrong: number; auto: number }>()
+  for (const r of results) {
+    const c = byCat.get(r[1]!) ?? { n: 0, wrong: 0, auto: 0 }
+    c.n++
+    if (Number(r[4]) > 0) c.wrong++
+    if (r[7] === "true") c.auto++
+    byCat.set(r[1]!, c)
+  }
+  for (const [cat, c] of [...byCat].sort((a, b) => b[1].n - a[1].n))
+    console.log(`  ${cat.padEnd(30)} ${c.n} emails, ${c.wrong} wrong, ${c.auto} could auto-send`)
 }
 
 main()

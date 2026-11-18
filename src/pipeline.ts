@@ -73,7 +73,7 @@ import {
   CATEGORY_LABELS,
   type Category,
 } from "./llm/classifier.js"
-import { CHECK_FLAG, draft, type DraftResult } from "./llm/drafter.js"
+import { autoSendCandidate, CHECK_FLAG, draft, type DraftResult } from "./llm/drafter.js"
 import { extractBooking } from "./llm/booking.js"
 import { classifyConfirmation } from "./llm/confirmation.js"
 import { dequote } from "./lib/dequote.js"
@@ -157,9 +157,18 @@ async function syncCheckLabel(threadId: string, d: DraftResult): Promise<void> {
   else await removeLabel(threadId, CHECK_LABEL).catch(() => {})
 }
 
-/** The fact-checker's findings, stored on the thread for the digest/queue. */
+/** The fact-checker's findings, stored on the thread for the digest/queue.
+ * autoSendCandidate is SHADOW MODE (18 Nov 2026): it records whether this
+ * draft would have been safe to send untouched, so the edit staff make
+ * before sending (inbox_learnings) shows per category whether auto-send
+ * could be trusted. It sends nothing. */
 function checkMeta(d: DraftResult): Record<string, unknown> {
-  return { checkNotes: d.checkNotes ?? [], openQuestions: d.openQuestions ?? [], bookingTasks: d.bookingTasks ?? [] }
+  return {
+    checkNotes: d.checkNotes ?? [],
+    openQuestions: d.openQuestions ?? [],
+    bookingTasks: d.bookingTasks ?? [],
+    autoSendCandidate: autoSendCandidate(d),
+  }
 }
 
 // Only archive LLM-classified noise when the classifier is sure. Regex-matched

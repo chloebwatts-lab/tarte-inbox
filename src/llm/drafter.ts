@@ -44,6 +44,20 @@ export interface DraftResult {
  * open questions, or the check could not run). Shown as a Gmail label. */
 export const CHECK_FLAG = "check_before_sending"
 
+// Flags that mean a person must look before this draft could ever go out.
+const HOLD_FLAGS = [
+  CHECK_FLAG, "needs_human", "fact_check_failed", "unverified_price", "check_calendar_before_sending",
+  "check_package_matches_space", "offer_tea_garden_alternative", "allergen_question",
+  "needs_floor_layout_check", "no_output", "unparseable", "json_failed",
+]
+
+/** Would this draft be safe to send with no human touching it? Used in
+ * shadow mode only (meta.autoSendCandidate, the accuracy eval): auto-send
+ * stays OFF until the owner switches a category on. */
+export function autoSendCandidate(d: DraftResult): boolean {
+  return !!d.body && d.flags.includes("fact_checked") && !d.flags.some((f) => HOLD_FLAGS.includes(f))
+}
+
 // Facts that apply across every category. Playbook FAQ entries can add to
 // these but must not contradict them.
 const BUSINESS_FACTS = `Business facts (always true, any category):
@@ -328,38 +342,55 @@ export async function draft(req: DraftRequest): Promise<DraftResult> {
   if (!text) return { body: "", confidence: 0, flags: ["needs_human", "no_output"] }
   let result = parseJson(text)
 
-  // Second agent: check every claim before a human sees the draft.
+  // Second agent: check every claim before a human sees the draft. When it
+  // corrects the draft, the corrected text is checked again (a fix can bring
+  // its own mistake): up to 2 passes, findings merged across passes.
   if (result.body) {
     const extras = (req.customExtras ?? []).map((e) => e.content).join("\n\n")
-    const check = await factCheck({
+    const checkInput = {
       factsBlock: facts,
       threadText: threadText + (extras ? `\n\n--- context given to the drafter ---\n${extras}` : ""),
       calendarBlock,
-      draftBody: result.body,
-    })
+    }
     const flags = new Set(result.flags)
-    if (!check.ok) {
+    const notes: string[] = []
+    const mustCheck = new Set<string>()
+    const tasks = new Set<string>()
+    const gaps = new Set<string>()
+    let failed = false
+    for (let pass = 1; pass <= 2; pass++) {
+      const check = await factCheck({ ...checkInput, draftBody: result.body })
+      if (!check.ok) {
+        failed = true
+        break
+      }
+      notes.push(...check.problems)
+      check.openQuestions.forEach((q) => mustCheck.add(q))
+      check.bookingTasks.forEach((q) => tasks.add(q))
+      check.knowledgeGaps.forEach((q) => gaps.add(q))
+      if (!check.changed) break
+      flags.add("fact_fixed")
+      result = { ...result, body: debot(check.body) }
+      // Still changing on the last pass: a person should look.
+      if (pass === 2) mustCheck.add("The fact-checker had to correct this draft twice. Read it closely before sending.")
+    }
+    if (failed) {
       flags.add("fact_check_failed")
       flags.add(CHECK_FLAG)
     } else {
       flags.add("fact_checked")
-      if (check.changed) {
-        flags.add("fact_fixed")
-        result = { ...result, body: debot(check.body) }
-      }
-      if (check.openQuestions.length) {
-        flags.add(CHECK_FLAG)
-        flags.add("needs_human")
-      }
-      if (check.knowledgeGaps.length && !req.dryRun)
-        await recordKnowledgeGaps(req.threadId, req.category, check.knowledgeGaps)
     }
+    if (mustCheck.size) {
+      flags.add(CHECK_FLAG)
+      flags.add("needs_human")
+    }
+    if (gaps.size && !req.dryRun) await recordKnowledgeGaps(req.threadId, req.category, [...gaps])
     result = {
       ...result,
       flags: [...flags],
-      checkNotes: check.problems,
-      openQuestions: check.openQuestions,
-      bookingTasks: check.bookingTasks,
+      checkNotes: notes,
+      openQuestions: [...mustCheck],
+      bookingTasks: [...tasks],
       calendarBlock,
     }
   }
