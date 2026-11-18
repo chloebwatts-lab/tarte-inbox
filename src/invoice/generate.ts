@@ -462,7 +462,7 @@ export function renderInvoicePdf(p: {
     )
     const bankBottom = doc.y
     doc.text(
-      ["Credit card", "Payment in store or over the phone", "(incurs a surcharge)"].join("\n"),
+      ["Credit card", "Payment in store or over the phone"].join("\n"),
       320,
       colY,
       { width: R - 320 }
