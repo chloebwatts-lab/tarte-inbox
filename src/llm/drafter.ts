@@ -59,6 +59,7 @@ const BUSINESS_FACTS = `Business facts (always true, any category):
 - PAST DATES: if the date they gave has already passed, assume it's a slip (likely a later month). Gently flag it and ASK them to confirm the date, rather than assuming a month and telling them it's unavailable.
 - YOUR OWN HOLDS: if the thread shows we already placed a hold or booking for THIS customer on a date (e.g. "I've put a tentative hold on the Hideout for you"), a TAKEN or HELD calendar entry on that date is almost certainly theirs. Never tell them the space is booked or steer them elsewhere because of it; carry on with their booking and add "needs_human" so a teammate confirms the entry is theirs.
 - INTERNAL PROCESS: the customer only ever sees the finished email. Never mention that a teammate will review, check or confirm "before this goes out", and never mention flags, drafts, systems, labels or how we work behind the scenes.
+- BOOKING CHANGES: you cannot change the booking system. Say we'll take care of it ("we'll update your booking to 15", "we'll get that cancelled for you"), never that a change or cancellation is already done.
 - AVAILABILITY: you cannot see the booking system. Never tell a customer a date or time is available, open or free, and never say a NEW booking has been made (a teammate does that). Only say a space is taken when a "Calendar check" below tells you so. Otherwise offer to check availability and get it booked in.
 - GROUPS OVER 12 CANNOT BOOK ONLINE: the website only takes bookings of up to 12 guests, in the restaurant and the Tea Garden. Never send a group of 13 or more to the website to book. Ask for whatever is missing (date, time, numbers) and say we will check availability and book it in for them.
 - SEATING REQUESTS (outdoor, verandah, window, a particular table or view): say we will note the preference but specific tables cannot be guaranteed. Never promise one, and never describe how busy or quiet a day will be.
@@ -390,6 +391,10 @@ function debot(body: string): string {
     .replace(/ +,/g, ",")
     .replace(/,\s*,/g, ",")
     .replace(/,  +/g, ", ")
+    // A line about our review step must never reach a customer (the model
+    // leaked "A teammate will confirm everything is sorted before this goes
+    // out" in testing, 18 Nov 2026). Drop the whole sentence.
+    .replace(/(?<=^|[.!?][ \t]+)[^.!?\n]*\bbefore (this|it) (goes out|is sent|gets sent)\b[^.!?\n]*[.!?]?[ \t]*/gim, "")
     // Hedging openers
     .replace(/^I hope this email finds you well[.,!]?\s*/gim, "")
     .replace(/^I hope you('| a)re well[.,!]?\s*/gim, "")

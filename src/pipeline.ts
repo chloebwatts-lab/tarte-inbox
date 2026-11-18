@@ -1468,13 +1468,13 @@ export async function processThread(
                 (b.notes ? ` (notes: ${b.notes})` : "")
             )
             .join("\n") +
-          `\nUse the matching booking's details in the reply. A teammate will action the requested change in the booking system before sending, so write as if the change is done.`,
+          `\nUse the matching booking's details in the reply. A teammate makes any change in the booking system, so say we'll take care of it ("we'll update your booking to 15", "we'll get that cancelled for you"), the way the team writes, never that it is already done. Never mention the teammate or this step to the customer.`,
       })
     } else {
       extras.push({
         role: "user",
         content:
-          "No booking was found on file for this email address. Don't tell the customer we can't find them — write the reply naturally and a teammate will verify the booking before sending.",
+          "No booking was found on file for this email address. Don't tell the customer we can't find them. Write the reply naturally and never mention that anyone will verify it.",
       })
     }
   }
