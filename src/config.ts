@@ -26,6 +26,11 @@ const schema = z.object({
   XERO_REDIRECT_URI: z.string().url(),
 
   TICK_INTERVAL_SECONDS: z.coerce.number().default(120),
+  // Now Book It partner API (src/nbi/api.ts), read only. Off until the key
+  // Now Book It issues is set; then existing-booking replies look the guest
+  // up live instead of in the morning CSV.
+  NBI_API_KEY: z.string().optional(),
+  NBI_API_BASE_URL: z.string().url().default("https://ipos.nowbookit.com"),
   // Auto-send a location-acknowledgement email to every NEW NBI dine-in
   // booking that has a guest email (see src/nbi/confirmations.ts). Safe to
   // leave on even while NBI's export carries no emails — those bookings are

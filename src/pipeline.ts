@@ -46,6 +46,7 @@ import {
   nbiBookingsForEmail,
   nbiOverlapCount,
 } from "./nbi/ingest.js"
+import { nbiApiBookingsForEmail } from "./nbi/api.js"
 import {
   findOrCreateContact,
   createAuthorisedInvoice,
@@ -1464,7 +1465,11 @@ export async function processThread(
   const extras: Array<{ role: "user" | "assistant"; content: string }> = []
   if (historyBlock) extras.push({ role: "user", content: historyBlock })
   if (result.category === "bookings_existing" && customerEmailAddr) {
-    const nbi = await nbiBookingsForEmail(customerEmailAddr)
+    // Live from Now Book It when the API key is set (the CSV has never
+    // carried guest emails); otherwise, or on an API error, the CSV table.
+    const nbi =
+      (await nbiApiBookingsForEmail(customerEmailAddr)) ??
+      (await nbiBookingsForEmail(customerEmailAddr))
     if (nbi.length) {
       extras.push({
         role: "user",

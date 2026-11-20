@@ -110,6 +110,12 @@ app.post("/tick", async (c) => {
   return c.json({ seen, acted })
 })
 
+// Now Book It API connection check (counts only, no guest details).
+app.get("/nbi-api/status", async (c) => {
+  const { nbiApiStatus } = await import("./nbi/api.js")
+  return c.json(await nbiApiStatus())
+})
+
 app.post("/sync-nbi", async (c) => {
   const { ingestNbi } = await import("./nbi/ingest.js")
   const r = await ingestNbi(7)
